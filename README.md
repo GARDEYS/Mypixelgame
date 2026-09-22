@@ -17,13 +17,346 @@
 "use strict";
 
 /* =========================================================
-   ХРОНИКИ ЗАБЫТОГО СВЕТА — прототип
+   ХРОНИКИ ЗАБЫТОГО СВЕТА
+   Полный прототип: платформер-головоломка со светом,
+   процедурным звуком, реактивной чиптюн-музыкой и эхом.
    ========================================================= */
 
+/* ====================== АУДИО-ДВИЖОК ====================== */
+const SFX = (() => {
+  let ac = null, master = null, input = null;
+  let reverb = null, drySend = null, wetSend = null;
+  let ambientGain = null, musicGain = null;
+  let layerBase = null, layerPad = null, layerArp = null, layerPerc = null;
+  let enabled = true, muted = false;
+  let noiseBuf = null, lastHitT = 0;
+
+  let musicIntensity = 0;
+  let musicIntensitySm = 0;
+
+  let musicTimer = null;
+  let nextNoteTime = 0;
+  let step = 0;
+  const BPM = 72;
+  const STEP_DUR = 60 / BPM / 2;
+  const LOOKAHEAD = 0.12;
+  const INTERVAL = 25;
+  const TOTAL_STEPS = 32;
+
+  const N = {
+    'A2':110.00,'F2':87.31,'C3':130.81,'G2':98.00,
+    'F3':174.61,'A3':220.00,'B3':246.94,'C4':261.63,'D4':293.66,'E4':329.63,
+    'F4':349.23,'G4':392.00,'A4':440.00,'B4':493.88,
+    'C5':523.25,'D5':587.33,'E5':659.25,'G5':783.99,'A5':880.00
+  };
+
+  const MELODY = [
+    'A4',null,'E5',null, 'C5',null,'A4',null,
+    'F4',null,'C5',null, 'A4',null,'F4',null,
+    'C4',null,'G4',null, 'E5',null,'C5',null,
+    'G3',null,'D4',null, 'B4',null,'G4',null
+  ];
+  const BASS = [
+    'A2',null,null,null,'A2',null,null,null,
+    'F2',null,null,null,'F2',null,null,null,
+    'C3',null,null,null,'C3',null,null,null,
+    'G2',null,null,null,'G2',null,null,null
+  ];
+  const PADS = [
+    ['A3','C4','E4'],
+    ['F3','A3','C4'],
+    ['C4','E4','G4'],
+    ['G3','B3','D4']
+  ];
+  const ARP = ['A5','C5','E5','G5'];
+
+  function ensure(){
+    if(!enabled) return null;
+    if(ac){ if(ac.state === 'suspended') ac.resume(); return ac; }
+    try{
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+
+      master = ac.createGain();
+      master.gain.value = 0.34;
+      master.connect(ac.destination);
+
+      reverb = ac.createConvolver();
+      reverb.buffer = makeImpulse(ac, 2.6, 3.2);
+
+      input = ac.createGain();
+      drySend = ac.createGain(); drySend.gain.value = 0.78;
+      wetSend = ac.createGain(); wetSend.gain.value = 0.62;
+      input.connect(drySend); drySend.connect(master);
+      input.connect(wetSend); wetSend.connect(reverb);
+      reverb.connect(master);
+
+      musicGain = ac.createGain();
+      musicGain.gain.value = 0.0001;
+      musicGain.connect(input);
+
+      layerBase = ac.createGain(); layerBase.gain.value = 1.0;
+      layerPad  = ac.createGain(); layerPad.gain.value  = 0.0;
+      layerArp  = ac.createGain(); layerArp.gain.value  = 0.0;
+      layerPerc = ac.createGain(); layerPerc.gain.value = 0.0;
+
+      layerBase.connect(musicGain);
+      layerPad.connect(musicGain);
+      layerArp.connect(musicGain);
+      layerPerc.connect(musicGain);
+    }catch(e){ enabled = false; }
+    return ac;
+  }
+
+  function makeImpulse(c, dur, decay){
+    const rate = c.sampleRate;
+    const len = Math.floor(rate * dur);
+    const buf = c.createBuffer(2, len, rate);
+    for(let ch = 0; ch < 2; ch++){
+      const d = buf.getChannelData(ch);
+      for(let i = 0; i < len; i++){
+        const t = i / len;
+        let v = (Math.random()*2 - 1) * Math.pow(1 - t, decay);
+        if(i < rate * 0.04) v *= 1.7;
+        d[i] = v;
+      }
+    }
+    return buf;
+  }
+
+  function getNoise(c){
+    if(noiseBuf) return noiseBuf;
+    const len = Math.floor(c.sampleRate * 0.6);
+    noiseBuf = c.createBuffer(1, len, c.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for(let i = 0; i < len; i++) d[i] = Math.random()*2 - 1;
+    return noiseBuf;
+  }
+
+  function env(g, t0, attack, peak, decay){
+    g.gain.cancelScheduledValues(t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + decay);
+  }
+
+  function tone(freq, dur, type='square', vol=0.25, slideTo=null, delay=0){
+    const c = ensure(); if(!c || muted) return;
+    const t = c.currentTime + delay;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if(slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
+    env(g, t, 0.005, vol, dur);
+    o.connect(g); g.connect(input);
+    o.start(t); o.stop(t + dur + 0.06);
+  }
+
+  function noise(dur, vol=0.18, fFrom=3000, fTo=180, q=1.2, delay=0){
+    const c = ensure(); if(!c || muted) return;
+    const t = c.currentTime + delay;
+    const src = c.createBufferSource();
+    src.buffer = getNoise(c);
+    const flt = c.createBiquadFilter();
+    flt.type = 'lowpass'; flt.Q.value = q;
+    flt.frequency.setValueAtTime(fFrom, t);
+    flt.frequency.exponentialRampToValueAtTime(Math.max(60, fTo), t + dur);
+    const g = c.createGain();
+    env(g, t, 0.004, vol, dur);
+    src.connect(flt); flt.connect(g); g.connect(input);
+    src.start(t); src.stop(t + dur + 0.05);
+  }
+
+  function startAmbient(){
+    const c = ensure(); if(!c || ambientGain) return;
+    const t = c.currentTime;
+    ambientGain = c.createGain();
+    ambientGain.gain.setValueAtTime(0.0001, t);
+    ambientGain.gain.exponentialRampToValueAtTime(0.055, t + 4);
+    ambientGain.connect(input);
+
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 320;
+    lp.connect(ambientGain);
+
+    [110, 110.7, 164.8].forEach((f, i) => {
+      const o = c.createOscillator();
+      o.type = i === 2 ? 'triangle' : 'sine';
+      o.frequency.value = f;
+      const g = c.createGain();
+      g.gain.value = i === 2 ? 0.35 : 0.55;
+      o.connect(g); g.connect(lp);
+      o.start(t);
+    });
+
+    const lfo = c.createOscillator();
+    lfo.frequency.value = 0.06;
+    const lfoG = c.createGain();
+    lfoG.gain.value = 0.018;
+    lfo.connect(lfoG); lfoG.connect(ambientGain.gain);
+    lfo.start(t);
+  }
+
+  function playNote(freq, t, dur, type, vol, dest){
+    const o = ac.createOscillator();
+    o.type = type;
+    o.frequency.value = freq;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+    g.gain.setValueAtTime(vol, t + dur * 0.55);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(dest);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  function kickPerc(t){
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.frequency.setValueAtTime(120, t);
+    o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.20, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    o.connect(g); g.connect(layerPerc);
+    o.start(t); o.stop(t + 0.22);
+  }
+
+  function hatPerc(t){
+    const src = ac.createBufferSource();
+    src.buffer = getNoise(ac);
+    const flt = ac.createBiquadFilter();
+    flt.type = 'highpass'; flt.frequency.value = 6500;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.055, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    src.connect(flt); flt.connect(g); g.connect(layerPerc);
+    src.start(t); src.stop(t + 0.1);
+  }
+
+  function scheduleStep(i, t){
+    const mel = MELODY[i];
+    if(mel){
+      playNote(N[mel], t, STEP_DUR * 1.7, 'triangle', 0.16, layerBase);
+      playNote(N[mel] * 2, t, STEP_DUR * 0.9, 'sine', 0.045, layerBase);
+    }
+    const bass = BASS[i];
+    if(bass){
+      playNote(N[bass], t, STEP_DUR * 3.2, 'sawtooth', 0.10, layerBase);
+      playNote(N[bass] / 2, t, STEP_DUR * 3.2, 'sine', 0.08, layerBase);
+    }
+    if(i % 8 === 0){
+      const chord = PADS[Math.floor(i / 8)];
+      if(chord) chord.forEach(f =>
+        playNote(N[f], t, STEP_DUR * 7.6, 'sine', 0.06, layerPad));
+    }
+    if(i % 2 === 1){
+      const n = ARP[Math.floor(i / 2) % ARP.length];
+      playNote(N[n], t, STEP_DUR * 0.75, 'square', 0.038, layerArp);
+    }
+    if(i % 4 === 0) kickPerc(t);
+    if(i % 4 === 2) hatPerc(t);
+  }
+
+  function updateLayers(){
+    musicIntensitySm += (musicIntensity - musicIntensitySm) * 0.06;
+    const I = musicIntensitySm;
+    layerPad.gain.value  = Math.min(1, I * 1.1);
+    layerArp.gain.value  = Math.max(0, (I - 0.35) / 0.65);
+    layerPerc.gain.value = Math.max(0, (I - 0.55) / 0.45);
+  }
+
+  function scheduler(){
+    if(!ac || muted) return;
+    updateLayers();
+    if(nextNoteTime < ac.currentTime) nextNoteTime = ac.currentTime + 0.05;
+    let guard = 0;
+    while(nextNoteTime < ac.currentTime + LOOKAHEAD && guard++ < 32){
+      scheduleStep(step, nextNoteTime);
+      nextNoteTime += STEP_DUR;
+      step = (step + 1) % TOTAL_STEPS;
+    }
+  }
+
+  function startMusic(){
+    const c = ensure(); if(!c || musicTimer) return;
+    step = 0;
+    nextNoteTime = c.currentTime + 0.15;
+    musicTimer = setInterval(scheduler, INTERVAL);
+    const t = c.currentTime;
+    musicGain.gain.cancelScheduledValues(t);
+    musicGain.gain.setValueAtTime(Math.max(0.0001, musicGain.gain.value), t);
+    musicGain.gain.exponentialRampToValueAtTime(0.85, t + 3.5);
+  }
+
+  return {
+    init(){ ensure(); startAmbient(); startMusic(); },
+
+    setIntensity(v){
+      musicIntensity = v < 0 ? 0 : v > 1 ? 1 : v;
+    },
+    getIntensity(){ return musicIntensitySm; },
+
+    toggleMute(){
+      muted = !muted;
+      if(master) master.gain.value = muted ? 0 : 0.34;
+      return muted;
+    },
+    isMuted(){ return muted; },
+
+    jump(){     tone(320, 0.10, 'square',   0.16, 520); },
+    djump(){    tone(480, 0.12, 'square',   0.15, 760);
+                tone(720, 0.09, 'triangle', 0.09, 900, 0.03); },
+    land(){     noise(0.10, 0.16, 900, 90, 1.0); },
+
+    footstep(side){
+      const c = ensure(); if(!c || muted) return;
+      const t = c.currentTime;
+      const src = c.createBufferSource();
+      src.buffer = getNoise(c);
+      const flt = c.createBiquadFilter();
+      flt.type = 'lowpass';
+      const f0 = side ? 780 : 1000;
+      flt.frequency.setValueAtTime(f0, t);
+      flt.frequency.exponentialRampToValueAtTime(180, t + 0.06);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.055, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+      src.connect(flt); flt.connect(g); g.connect(input);
+      src.start(t); src.stop(t + 0.1);
+    },
+
+    flash(){    noise(0.28, 0.20, 5000, 400, 1.5);
+                tone(880, 0.22, 'triangle', 0.10, 1600, 0.01);
+                tone(1320, 0.18, 'sine',    0.06, 2200, 0.03); },
+    hitEnemy(){ const now = performance.now();
+                if(now - lastHitT < 55) return; lastHitT = now;
+                noise(0.06, 0.13, 2400, 500);
+                tone(420, 0.05, 'square', 0.08, 260); },
+    killEnemy(){ tone(260, 0.18, 'sawtooth', 0.18, 90);
+                 noise(0.16, 0.14, 1800, 200, 1.1); },
+    hurt(){     tone(180, 0.30, 'sawtooth', 0.22, 70);
+                noise(0.22, 0.18, 1400, 120, 1.0); },
+    shroom(){   [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
+                  tone(f, 0.22, 'triangle', 0.14, null, i*0.05)); },
+    shard(){    tone(880, 0.07, 'triangle', 0.14, 1320);
+                tone(1320, 0.12, 'sine', 0.10, null, 0.05); },
+    death(){    tone(220, 0.9, 'sawtooth', 0.22, 40);
+                noise(0.8, 0.16, 1200, 60, 0.9);
+                tone(110, 1.2, 'sine', 0.14, 30, 0.1); },
+    win(){      [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
+                  tone(f, 0.4, 'triangle', 0.16, null, i*0.11);
+                  tone(f*2, 0.3, 'sine', 0.05, null, i*0.11 + 0.02);
+                });
+                noise(0.6, 0.10, 6000, 800, 1.4, 0.05); },
+  };
+})();
+
+/* ====================== КАНВАС ====================== */
 const VW = 480, VH = 270;
 const cvs = document.getElementById('c');
 const ctx = cvs.getContext('2d');
-
 const darkCv = document.createElement('canvas');
 darkCv.width = VW; darkCv.height = VH;
 const dctx = darkCv.getContext('2d');
@@ -37,16 +370,20 @@ function resize(){
 }
 addEventListener('resize', resize); resize();
 
-/* ---------------- ВВОД ---------------- */
+/* ====================== ВВОД ====================== */
 const keys = {};
 let jumpBuffer = 0, restartBuffer = 0;
+let prevFocus = false;
+let mutedBannerT = 0;
 
 addEventListener('keydown', e => {
   if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+  SFX.init();
   if(keys[e.code]) return;
   keys[e.code] = true;
   if(e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') jumpBuffer = 0.14;
   if(e.code === 'KeyR' || e.code === 'Enter') restartBuffer = 0.14;
+  if(e.code === 'KeyM'){ SFX.toggleMute(); mutedBannerT = 1.6; }
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -54,57 +391,40 @@ const left  = () => keys['KeyA'] || keys['ArrowLeft'];
 const right = () => keys['KeyD'] || keys['ArrowRight'];
 const focus = () => keys['ShiftLeft'] || keys['ShiftRight'];
 
-/* ---------------- УРОВЕНЬ ---------------- */
+/* ====================== УРОВЕНЬ ====================== */
 const LEVEL_W  = 2600;
 const GROUND_Y = 230;
 
 const platforms = [
-  {x:0,    y:GROUND_Y, w:400, h:40},
-  {x:455,  y:GROUND_Y, w:250, h:40},
-  {x:760,  y:GROUND_Y, w:170, h:40},
-  {x:985,  y:GROUND_Y, w:400, h:40},
-  {x:1440, y:GROUND_Y, w:300, h:40},
-  {x:1795, y:GROUND_Y, w:805, h:40},
-  // верхние платформы
-  {x:250,  y:180, w:70,  h:10},
-  {x:390,  y:148, w:60,  h:10},
-  {x:545,  y:175, w:80,  h:10},
-  {x:695,  y:140, w:70,  h:10},
-  {x:845,  y:178, w:90,  h:10},
-  {x:990,  y:140, w:80,  h:10},
-  {x:1140, y:168, w:90,  h:10},
-  {x:1300, y:132, w:80,  h:10},
-  {x:1440, y:162, w:90,  h:10},
-  {x:1600, y:178, w:90,  h:10},
-  {x:1760, y:138, w:100, h:10},
-  {x:1950, y:178, w:90,  h:10},
-  {x:2100, y:135, w:110, h:10},
-  {x:2280, y:172, w:100, h:10},
+  {x:0,    y:GROUND_Y, w:400, h:40},{x:455,  y:GROUND_Y, w:250, h:40},
+  {x:760,  y:GROUND_Y, w:170, h:40},{x:985,  y:GROUND_Y, w:400, h:40},
+  {x:1440, y:GROUND_Y, w:300, h:40},{x:1795, y:GROUND_Y, w:805, h:40},
+  {x:250,  y:180, w:70,  h:10},{x:390,  y:148, w:60,  h:10},
+  {x:545,  y:175, w:80,  h:10},{x:695,  y:140, w:70,  h:10},
+  {x:845,  y:178, w:90,  h:10},{x:990,  y:140, w:80,  h:10},
+  {x:1140, y:168, w:90,  h:10},{x:1300, y:132, w:80,  h:10},
+  {x:1440, y:162, w:90,  h:10},{x:1600, y:178, w:90,  h:10},
+  {x:1760, y:138, w:100, h:10},{x:1950, y:178, w:90,  h:10},
+  {x:2100, y:135, w:110, h:10},{x:2280, y:172, w:100, h:10},
 ];
 
 const shroomSpawns = [
-  {x:150,  y:222}, {x:600,  y:222}, {x:1050, y:222},
-  {x:1520, y:222}, {x:1900, y:222}, {x:2400, y:222},
-  {x:415,  y:140}, {x:1015, y:132}, {x:1795, y:130},
+  {x:150,y:222},{x:600,y:222},{x:1050,y:222},{x:1520,y:222},
+  {x:1900,y:222},{x:2400,y:222},{x:415,y:140},{x:1015,y:132},{x:1795,y:130},
 ];
-
 const shardSpawns = [
-  {x:300,  y:150}, {x:760,  y:150}, {x:1220, y:200},
-  {x:1660, y:150}, {x:2020, y:190}, {x:2250, y:110},
-  {x:1340, y:100},
+  {x:300,y:150},{x:760,y:150},{x:1220,y:200},{x:1660,y:150},
+  {x:2020,y:190},{x:2250,y:110},{x:1340,y:100},
 ];
-
 const enemySpawns = [
-  {x:330,  y:180}, {x:560,  y:195}, {x:730,  y:185},
-  {x:900,  y:160}, {x:1120, y:180}, {x:1320, y:200},
-  {x:1530, y:170}, {x:1720, y:190}, {x:1950, y:160},
-  {x:2120, y:185}, {x:2300, y:170},
+  {x:330,y:180},{x:560,y:195},{x:730,y:185},{x:900,y:160},{x:1120,y:180},
+  {x:1320,y:200},{x:1530,y:170},{x:1720,y:190},{x:1950,y:160},
+  {x:2120,y:185},{x:2300,y:170},
 ];
-
 const ALTAR = {x:2500, y:186, w:34, h:44};
 
-/* ---------------- СОСТОЯНИЕ ---------------- */
-let state = 'title';   // title | play | dead | win
+/* ====================== СОСТОЯНИЕ ====================== */
+let state = 'title';
 let time = 0;
 let cam = {x:0};
 let shake = 0;
@@ -115,16 +435,16 @@ const player = {
   light:100, inv:0, dead:false
 };
 
-let enemies = [], shrooms = [], shards = [], particles = [], motes = [];
+let enemies=[], shrooms=[], shards=[], particles=[], motes=[];
+let stepTimer = 0, stepSide = 0;
 
-/* ---------------- УТИЛИТЫ ---------------- */
+/* ====================== УТИЛИТЫ ====================== */
 const rand = (a,b) => a + Math.random()*(b-a);
 const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
 
 function overlap(a,b){
   return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
 }
-
 function burst(x,y,color,n,spd=2){
   for(let i=0;i<n;i++){
     const a = Math.random()*Math.PI*2, s = rand(0.4,1)*spd;
@@ -133,7 +453,7 @@ function burst(x,y,color,n,spd=2){
   }
 }
 
-/* ---------------- ИНИЦИАЛИЗАЦИЯ ---------------- */
+/* ====================== ИНИЦИАЛИЗАЦИЯ ====================== */
 function reset(){
   player.x = 40; player.y = 180;
   player.vx = 0; player.vy = 0;
@@ -145,21 +465,21 @@ function reset(){
     x:s.x, y:s.y, w:14, h:14, hp:2, t:Math.random()*6.28,
     dead:false, flash:0
   }));
-
   shrooms = shroomSpawns.map(s => ({x:s.x, y:s.y, r:9, used:false, timer:0}));
   shards  = shardSpawns.map(s => ({x:s.x, y:s.y, taken:false, t:Math.random()*6.28}));
 
-  particles = [];
-  motes = [];
+  particles = []; motes = [];
   for(let i=0;i<70;i++){
     motes.push({x:rand(0,LEVEL_W), y:rand(0,VH),
                 vx:rand(-0.12,0.12), vy:rand(-0.06,0.06),
                 s:Math.random()<0.3?2:1, a:rand(0.15,0.5)});
   }
   cam.x = 0; shake = 0;
+  stepTimer = 0; stepSide = 0;
+  SFX.setIntensity(0);
 }
 
-/* ---------------- ФИЗИКА ---------------- */
+/* ====================== ФИЗИКА ====================== */
 function moveAndCollide(e){
   e.x += e.vx;
   for(const p of platforms){
@@ -180,25 +500,22 @@ function moveAndCollide(e){
   }
 }
 
-/* ---------------- РАДИУС СВЕТА ---------------- */
 function lightRadius(){
   const base = 26 + player.light * 0.62;
-  const flick = 1 + Math.sin(time*9) * 0.02 + Math.sin(time*23) * 0.012;
+  const flick = 1 + Math.sin(time*9)*0.02 + Math.sin(time*23)*0.012;
   return base * (focus() && player.light > 0 ? 1.75 : 1) * flick;
 }
 
-/* ---------------- ОБНОВЛЕНИЕ ---------------- */
+/* ====================== ОБНОВЛЕНИЕ ====================== */
 function update(dt){
   time += dt;
+  if(mutedBannerT > 0) mutedBannerT -= dt;
 
-  // фоновая пыль
   for(const m of motes){
     m.x += m.vx; m.y += m.vy;
     if(m.y < -5) m.y = VH+5;
     if(m.y > VH+5) m.y = -5;
   }
-
-  // частицы
   for(let i=particles.length-1;i>=0;i--){
     const p = particles[i];
     p.x += p.vx; p.y += p.vy; p.vy += 0.06;
@@ -209,56 +526,68 @@ function update(dt){
   if(state !== 'play') return;
 
   /* --- управление --- */
-  const speed = 2.0;
-  const accel = 0.35;
-
+  const speed = 2.0, accel = 0.35;
   if(left()){  player.vx -= accel; player.face = -1; }
   if(right()){ player.vx += accel; player.face =  1; }
   if(!left() && !right()) player.vx *= player.onGround ? 0.72 : 0.90;
   player.vx = clamp(player.vx, -speed, speed);
 
-  // прыжок / двойной прыжок
+  const focusing = focus() && player.light > 0;
+  if(focusing && !prevFocus) SFX.flash();
+  prevFocus = focusing;
+
   jumpBuffer -= dt;
   if(jumpBuffer > 0){
     if(player.onGround){
       player.vy = -7.8; player.jumps = 1; jumpBuffer = 0;
       burst(player.x+5, player.y+14, '#6f7fd6', 5, 1.2);
+      SFX.jump();
     } else if(player.jumps < 2){
       player.vy = -7.0; player.jumps = 2; jumpBuffer = 0;
       burst(player.x+5, player.y+14, '#9aa8ff', 7, 1.6);
+      SFX.djump();
     }
   }
 
-  // гравитация
   player.vy += 0.5;
   if(player.vy > 11) player.vy = 11;
 
+  const wasGround = player.onGround;
+  const fallSpeed = player.vy;
   moveAndCollide(player);
+  if(player.onGround && !wasGround && fallSpeed > 4){
+    SFX.land();
+    burst(player.x+5, player.y+14, '#4a5070', 4, 1.0);
+    stepTimer = 0;
+  }
   if(player.onGround) player.jumps = 0;
-
-  // невидимость после удара
   if(player.inv > 0) player.inv -= dt;
 
+  /* --- шаги --- */
+  const walking = player.onGround && Math.abs(player.vx) > 0.5;
+  if(walking){
+    stepTimer -= dt;
+    if(stepTimer <= 0){
+      SFX.footstep(stepSide);
+      stepSide ^= 1;
+      stepTimer = 0.34 - Math.abs(player.vx) * 0.04;
+    }
+  } else {
+    stepTimer = 0;
+  }
+
   /* --- свет --- */
-  const drain = (focus() && player.light > 0 ? 5.2 : 1.3) * dt;
+  const drain = (focusing ? 5.2 : 1.3) * dt;
   player.light = Math.max(0, player.light - drain);
 
-  if(player.light <= 0){
-    die('Свет угас...');
-    return;
-  }
-
-  /* --- падение в пропасть --- */
-  if(player.y > VH + 30){
-    die('Ты растворился во тьме...');
-    return;
-  }
+  if(player.light <= 0){ die('Свет угас...'); return; }
+  if(player.y > VH + 30){ die('Ты растворился во тьме...'); return; }
 
   /* --- грибы --- */
   for(const s of shrooms){
     if(s.used){
       s.timer -= dt;
-      if(s.timer <= 0){ s.used = false; }
+      if(s.timer <= 0) s.used = false;
       continue;
     }
     if(overlap(player, {x:s.x-s.r, y:s.y-s.r, w:s.r*2, h:s.r*2})){
@@ -266,68 +595,75 @@ function update(dt){
       player.light = Math.min(100, player.light + 42);
       burst(s.x, s.y, '#7ff0d8', 14, 2.2);
       shake = Math.max(shake, 2);
+      SFX.shroom();
     }
   }
 
-  /* --- осколки зари --- */
+  /* --- осколки --- */
   for(const sh of shards){
     if(sh.taken) continue;
     if(overlap(player, {x:sh.x-5, y:sh.y-5, w:10, h:10})){
       sh.taken = true;
       player.light = Math.min(100, player.light + 12);
       burst(sh.x, sh.y, '#ffd76a', 9, 1.8);
+      SFX.shard();
     }
   }
 
   /* --- враги --- */
   const R = lightRadius();
   const px = player.x + player.w/2, py = player.y + player.h/2;
+  let nearestDist = 9999;
 
   for(const e of enemies){
     if(e.dead) continue;
     e.t += dt * 2.4;
-
     const ex = e.x + e.w/2, ey = e.y + e.h/2;
     const dx = px - ex, dy = py - ey;
     const dist = Math.hypot(dx, dy) || 1;
-    const lit = dist < R;
+    if(dist < nearestDist) nearestDist = dist;
 
+    const lit = dist < R;
     if(lit){
-      // отступает и получает урон
       e.hp -= 1.4 * dt;
       e.flash = 1;
-      const sp = 1.5;
-      e.x -= (dx/dist) * sp;
-      e.y -= (dy/dist) * sp;
+      SFX.hitEnemy();
+      e.x -= (dx/dist) * 1.5;
+      e.y -= (dy/dist) * 1.5;
       if(e.hp <= 0){
         e.dead = true;
         burst(ex, ey, '#8ea2ff', 14, 2.4);
         player.light = Math.min(100, player.light + 4);
+        SFX.killEnemy();
       }
     } else {
       e.flash = Math.max(0, e.flash - dt*2);
-      const sp = 0.62;
-      e.x += (dx/dist) * sp;
-      e.y += (dy/dist) * sp;
+      e.x += (dx/dist) * 0.62;
+      e.y += (dy/dist) * 0.62;
     }
 
-    // столкновение с игроком
     if(player.inv <= 0 && overlap(player, e)){
       player.light = Math.max(0, player.light - 11);
       player.inv = 1.1;
       const k = px < ex ? -1 : 1;
-      player.vx = k * 4.2;
-      player.vy = -3.6;
+      player.vx = k * 4.2; player.vy = -3.6;
       shake = 5;
       burst(px, py, '#ff6b8a', 10, 2);
+      SFX.hurt();
     }
   }
 
-  /* --- алтарь (победа) --- */
+  /* --- реактивная музыка --- */
+  const progress = clamp(player.x / LEVEL_W, 0, 1);
+  const danger   = clamp(1 - nearestDist / 150, 0, 1);
+  SFX.setIntensity(clamp(progress * 0.5 + danger * 0.7, 0, 1));
+
+  /* --- победа --- */
   if(overlap(player, ALTAR)){
     state = 'win';
     burst(ALTAR.x+17, ALTAR.y+10, '#ffe9a3', 40, 3.5);
     shake = 8;
+    SFX.win();
   }
 
   /* --- камера --- */
@@ -344,66 +680,46 @@ function die(msg){
   player.dead = true;
   shake = 9;
   burst(player.x+5, player.y+7, '#ffd76a', 30, 3);
+  SFX.death();
+  SFX.setIntensity(1);
   document.title = msg;
 }
 
-/* ---------------- ОТРИСОВКА ---------------- */
+/* ====================== ОТРИСОВКА ====================== */
 function drawBackground(){
   const g = ctx.createLinearGradient(0,0,0,VH);
-  g.addColorStop(0, '#0a0d1e');
-  g.addColorStop(1, '#04050c');
-  ctx.fillStyle = g;
-  ctx.fillRect(0,0,VW,VH);
+  g.addColorStop(0, '#0a0d1e'); g.addColorStop(1, '#04050c');
+  ctx.fillStyle = g; ctx.fillRect(0,0,VW,VH);
 
-  // дальний слой колонн
   ctx.fillStyle = '#0d1122';
   for(let i=0;i<22;i++){
     let bx = ((i*180 - cam.x*0.25) % (VW+400) + VW+400) % (VW+400) - 200;
-    const bw = 32 + (i%3)*20;
-    const bh = 95 + (i%4)*38;
-    ctx.fillRect(Math.round(bx), VH-bh-45, bw, bh);
+    ctx.fillRect(Math.round(bx), VH-(95+(i%4)*38)-45, 32+(i%3)*20, 95+(i%4)*38);
   }
-  // ближний слой
   ctx.fillStyle = '#131a2e';
   for(let i=0;i<26;i++){
     let bx = ((i*140 - cam.x*0.5) % (VW+320) + VW+320) % (VW+320) - 160;
-    const bw = 22 + (i%4)*15;
-    const bh = 55 + (i%5)*32;
-    ctx.fillRect(Math.round(bx), VH-bh-22, bw, bh);
+    ctx.fillRect(Math.round(bx), VH-(55+(i%5)*32)-22, 22+(i%4)*15, 55+(i%5)*32);
   }
-  // туман у земли
   const f = ctx.createLinearGradient(0, VH-70, 0, VH);
   f.addColorStop(0, 'rgba(30,40,80,0)');
   f.addColorStop(1, 'rgba(40,55,110,0.16)');
-  ctx.fillStyle = f;
-  ctx.fillRect(0, VH-70, VW, 70);
+  ctx.fillStyle = f; ctx.fillRect(0, VH-70, VW, 70);
 }
 
 function drawPlatforms(){
   for(const p of platforms){
     const x = Math.round(p.x - cam.x), y = Math.round(p.y);
     if(x + p.w < -10 || x > VW + 10) continue;
-
-    ctx.fillStyle = '#221d33';
-    ctx.fillRect(x, y, p.w, p.h);
-
-    // верхняя кромка
-    ctx.fillStyle = '#3d3560';
-    ctx.fillRect(x, y, p.w, 2);
-    ctx.fillStyle = '#514679';
-    ctx.fillRect(x, y, p.w, 1);
-
-    // пиксельные крапинки (детерминированные)
+    ctx.fillStyle = '#221d33'; ctx.fillRect(x, y, p.w, p.h);
+    ctx.fillStyle = '#3d3560'; ctx.fillRect(x, y, p.w, 2);
+    ctx.fillStyle = '#514679'; ctx.fillRect(x, y, p.w, 1);
     ctx.fillStyle = '#2c2542';
     for(let i = 0; i < p.w; i += 6){
       const h = ((p.x + i) * 7919) % 11;
-      if(h < 4){
-        ctx.fillRect(x + i, y + 4 + (h*2), 2, 2);
-      }
+      if(h < 4) ctx.fillRect(x + i, y + 4 + (h*2), 2, 2);
     }
-    // нижняя тень
-    ctx.fillStyle = '#171327';
-    ctx.fillRect(x, y + p.h - 3, p.w, 3);
+    ctx.fillStyle = '#171327'; ctx.fillRect(x, y + p.h - 3, p.w, 3);
   }
 }
 
@@ -411,26 +727,13 @@ function drawShrooms(){
   for(const s of shrooms){
     const x = Math.round(s.x - cam.x), y = Math.round(s.y);
     if(x < -30 || x > VW+30) continue;
-
-    if(s.used){
-      ctx.fillStyle = '#2a3d3d';
-      ctx.fillRect(x-2, y-2, 5, 4);
-      continue;
-    }
-    // ножка
-    ctx.fillStyle = '#4d7f74';
-    ctx.fillRect(x-1, y-1, 3, 5);
-    // шляпка
-    ctx.fillStyle = '#5fe0c4';
-    ctx.fillRect(x-4, y-5, 9, 4);
-    ctx.fillStyle = '#a6fff0';
-    ctx.fillRect(x-4, y-5, 9, 1);
-    // пульс
+    if(s.used){ ctx.fillStyle = '#2a3d3d'; ctx.fillRect(x-2, y-2, 5, 4); continue; }
+    ctx.fillStyle = '#4d7f74'; ctx.fillRect(x-1, y-1, 3, 5);
+    ctx.fillStyle = '#5fe0c4'; ctx.fillRect(x-4, y-5, 9, 4);
+    ctx.fillStyle = '#a6fff0'; ctx.fillRect(x-4, y-5, 9, 1);
     const pulse = 0.6 + Math.sin(time*4 + s.x)*0.4;
     ctx.fillStyle = `rgba(120,255,225,${0.10*pulse})`;
-    ctx.beginPath();
-    ctx.arc(x, y-3, 14 + pulse*3, 0, 6.283);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y-3, 14 + pulse*3, 0, 6.283); ctx.fill();
   }
 }
 
@@ -440,128 +743,71 @@ function drawShards(){
     const x = Math.round(s.x - cam.x);
     const y = Math.round(s.y + Math.sin(time*2.5 + s.t)*3);
     if(x < -20 || x > VW+20) continue;
-
-    ctx.fillStyle = '#ffd76a';
-    ctx.fillRect(x-1, y-3, 2, 6);
-    ctx.fillRect(x-3, y-1, 6, 2);
-    ctx.fillStyle = '#fff3c4';
-    ctx.fillRect(x-1, y-1, 2, 2);
+    ctx.fillStyle = '#ffd76a'; ctx.fillRect(x-1, y-3, 2, 6); ctx.fillRect(x-3, y-1, 6, 2);
+    ctx.fillStyle = '#fff3c4'; ctx.fillRect(x-1, y-1, 2, 2);
   }
 }
 
 function drawAltar(){
   const x = Math.round(ALTAR.x - cam.x), y = ALTAR.y;
   if(x < -60 || x > VW+60) return;
-
-  // ступени
-  ctx.fillStyle = '#2a2440';
-  ctx.fillRect(x-8, y+34, 50, 8);
-  ctx.fillRect(x-4, y+28, 42, 6);
-  // колонны
-  ctx.fillStyle = '#37304f';
-  ctx.fillRect(x, y, 6, 34);
-  ctx.fillRect(x+28, y, 6, 34);
-  ctx.fillStyle = '#4b4270';
-  ctx.fillRect(x, y, 2, 34);
-  ctx.fillRect(x+28, y, 2, 34);
-  // арка
-  ctx.fillStyle = '#37304f';
-  ctx.fillRect(x, y-4, 34, 5);
-  // кристалл
+  ctx.fillStyle = '#2a2440'; ctx.fillRect(x-8, y+34, 50, 8); ctx.fillRect(x-4, y+28, 42, 6);
+  ctx.fillStyle = '#37304f'; ctx.fillRect(x, y, 6, 34); ctx.fillRect(x+28, y, 6, 34);
+  ctx.fillStyle = '#4b4270'; ctx.fillRect(x, y, 2, 34); ctx.fillRect(x+28, y, 2, 34);
+  ctx.fillStyle = '#37304f'; ctx.fillRect(x, y-4, 34, 5);
   const pulse = 0.7 + Math.sin(time*3)*0.3;
-  ctx.fillStyle = '#ffe9a3';
-  ctx.fillRect(x+14, y+10, 6, 10);
-  ctx.fillStyle = `rgba(255,220,140,${0.5*pulse})`;
-  ctx.fillRect(x+11, y+7, 12, 16);
-  ctx.fillStyle = '#fffbe0';
-  ctx.fillRect(x+15, y+12, 4, 5);
+  ctx.fillStyle = '#ffe9a3'; ctx.fillRect(x+14, y+10, 6, 10);
+  ctx.fillStyle = `rgba(255,220,140,${0.5*pulse})`; ctx.fillRect(x+11, y+7, 12, 16);
+  ctx.fillStyle = '#fffbe0'; ctx.fillRect(x+15, y+12, 4, 5);
 }
 
 function drawEnemies(){
   for(const e of enemies){
     if(e.dead) continue;
     const bob = Math.sin(e.t)*2;
-    const x = Math.round(e.x - cam.x);
-    const y = Math.round(e.y + bob);
+    const x = Math.round(e.x - cam.x), y = Math.round(e.y + bob);
     if(x < -40 || x > VW+40) continue;
-
-    // тело
     const c = e.flash > 0 ? '#3a3f78' : '#0e0e1a';
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x+7, y+7, 7, 0, 6.283); ctx.fill();
     ctx.fillStyle = c;
-    ctx.beginPath();
-    ctx.arc(x+7, y+7, 7, 0, 6.283);
-    ctx.fill();
-    // рваные края
-    ctx.fillStyle = c;
-    ctx.fillRect(x+1, y+9, 12, 5);
-    ctx.fillRect(x-1, y+7, 3, 4);
-    ctx.fillRect(x+12, y+8, 3, 4);
-
-    // глаза
+    ctx.fillRect(x+1, y+9, 12, 5); ctx.fillRect(x-1, y+7, 3, 4); ctx.fillRect(x+12, y+8, 3, 4);
     ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#ff4d6d';
-    ctx.fillRect(x+3, y+5, 2, 2);
-    ctx.fillRect(x+9, y+5, 2, 2);
-
-    // вспышка урона
+    ctx.fillRect(x+3, y+5, 2, 2); ctx.fillRect(x+9, y+5, 2, 2);
     if(e.flash > 0){
       ctx.fillStyle = `rgba(160,180,255,${e.flash*0.5})`;
-      ctx.beginPath();
-      ctx.arc(x+7, y+7, 11, 0, 6.283);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(x+7, y+7, 11, 0, 6.283); ctx.fill();
     }
   }
 }
 
 function drawPlayer(){
   if(state === 'dead') return;
-  const x = Math.round(player.x - cam.x);
-  const y = Math.round(player.y);
-
-  // мерцание при неуязвимости
+  const x = Math.round(player.x - cam.x), y = Math.round(player.y);
   if(player.inv > 0 && Math.floor(time*20) % 2 === 0) return;
-
   const f = player.face;
 
-  // плащ
-  ctx.fillStyle = '#2e2748';
-  ctx.fillRect(x, y+4, 10, 10);
-  ctx.fillStyle = '#3b3160';
-  ctx.fillRect(x+1, y+2, 8, 8);
-  // капюшон
-  ctx.fillStyle = '#4a3d78';
-  ctx.fillRect(x+1, y, 8, 5);
-  ctx.fillStyle = '#5a4a8e';
-  ctx.fillRect(x+1, y, 8, 1);
-  // тень внутри капюшона
-  ctx.fillStyle = '#0a0a14';
-  ctx.fillRect(x+2, y+2, 6, 3);
-  // глаза
+  ctx.fillStyle = '#2e2748'; ctx.fillRect(x, y+4, 10, 10);
+  ctx.fillStyle = '#3b3160'; ctx.fillRect(x+1, y+2, 8, 8);
+  ctx.fillStyle = '#4a3d78'; ctx.fillRect(x+1, y, 8, 5);
+  ctx.fillStyle = '#5a4a8e'; ctx.fillRect(x+1, y, 8, 1);
+  ctx.fillStyle = '#0a0a14'; ctx.fillRect(x+2, y+2, 6, 3);
   ctx.fillStyle = '#ffd76a';
-  ctx.fillRect(x+3, y+2, 2, 2);
-  ctx.fillRect(x+6, y+2, 2, 2);
-  // ноги
+  ctx.fillRect(x+3, y+2, 2, 2); ctx.fillRect(x+6, y+2, 2, 2);
   ctx.fillStyle = '#211c36';
-  ctx.fillRect(x+1, y+13, 3, 2);
-  ctx.fillRect(x+6, y+13, 3, 2);
+  ctx.fillRect(x+1, y+13, 3, 2); ctx.fillRect(x+6, y+13, 3, 2);
 
-  // посох
   const sx = f > 0 ? x + 11 : x - 3;
-  ctx.fillStyle = '#7a5c34';
-  ctx.fillRect(sx, y-6, 2, 16);
-  ctx.fillStyle = '#9a7648';
-  ctx.fillRect(sx, y-6, 1, 16);
-  // кристалл на посохе
+  ctx.fillStyle = '#7a5c34'; ctx.fillRect(sx, y-6, 2, 16);
+  ctx.fillStyle = '#9a7648'; ctx.fillRect(sx, y-6, 1, 16);
   const p2 = 0.7 + Math.sin(time*7)*0.3;
-  ctx.fillStyle = '#ffe9a3';
-  ctx.fillRect(sx-1, y-9, 4, 4);
+  ctx.fillStyle = '#ffe9a3'; ctx.fillRect(sx-1, y-9, 4, 4);
   ctx.fillStyle = `rgba(255,235,170,${0.55*p2})`;
   ctx.fillRect(sx-3, y-11, 8, 8);
 }
 
 function drawParticles(){
   for(const p of particles){
-    const a = clamp(p.life / p.max, 0, 1);
-    ctx.globalAlpha = a;
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
     ctx.fillStyle = p.color;
     ctx.fillRect(Math.round(p.x - cam.x), Math.round(p.y), 2, 2);
   }
@@ -574,215 +820,161 @@ function drawMotes(){
     const y = Math.round(m.y + Math.sin(time + m.x*0.01)*4);
     if(x < -5 || x > VW+5) continue;
     ctx.globalAlpha = m.a * (0.5 + 0.5*Math.sin(time*1.5 + m.x));
-    ctx.fillStyle = '#8fa4ff';
-    ctx.fillRect(x, y, m.s, m.s);
+    ctx.fillStyle = '#8fa4ff'; ctx.fillRect(x, y, m.s, m.s);
   }
   ctx.globalAlpha = 1;
 }
 
-/* ---- слой тьмы ---- */
 function drawDarkness(){
   if(state === 'win') return;
-
   dctx.globalCompositeOperation = 'source-over';
   dctx.clearRect(0,0,VW,VH);
-  dctx.fillStyle = 'rgba(2,3,9,0.965)';
-  dctx.fillRect(0,0,VW,VH);
-
+  dctx.fillStyle = 'rgba(2,3,9,0.965)'; dctx.fillRect(0,0,VW,VH);
   dctx.globalCompositeOperation = 'destination-out';
 
-  // свет игрока
   if(state !== 'dead'){
-    const px = player.x + player.w/2 - cam.x;
-    const py = player.y + player.h/2;
+    const px = player.x + player.w/2 - cam.x, py = player.y + player.h/2;
     const R = lightRadius();
     const g = dctx.createRadialGradient(px, py, 0, px, py, R);
-    g.addColorStop(0,    'rgba(0,0,0,1)');
-    g.addColorStop(0.45, 'rgba(0,0,0,0.92)');
-    g.addColorStop(0.75, 'rgba(0,0,0,0.45)');
-    g.addColorStop(1,    'rgba(0,0,0,0)');
+    g.addColorStop(0,'rgba(0,0,0,1)'); g.addColorStop(0.45,'rgba(0,0,0,0.92)');
+    g.addColorStop(0.75,'rgba(0,0,0,0.45)'); g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
     dctx.beginPath(); dctx.arc(px, py, R, 0, 6.283); dctx.fill();
   }
-
-  // грибы
   for(const s of shrooms){
     if(s.used) continue;
     const x = s.x - cam.x, y = s.y;
     if(x < -60 || x > VW+60) continue;
     const g = dctx.createRadialGradient(x, y-3, 0, x, y-3, 42);
-    g.addColorStop(0,   'rgba(0,0,0,0.85)');
-    g.addColorStop(0.6, 'rgba(0,0,0,0.30)');
-    g.addColorStop(1,   'rgba(0,0,0,0)');
+    g.addColorStop(0,'rgba(0,0,0,0.85)'); g.addColorStop(0.6,'rgba(0,0,0,0.30)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
     dctx.beginPath(); dctx.arc(x, y-3, 42, 0, 6.283); dctx.fill();
   }
-
-  // алтарь
   {
     const x = ALTAR.x + 17 - cam.x, y = ALTAR.y + 12;
     const g = dctx.createRadialGradient(x, y, 0, x, y, 70);
-    g.addColorStop(0,   'rgba(0,0,0,0.9)');
-    g.addColorStop(0.5, 'rgba(0,0,0,0.35)');
-    g.addColorStop(1,   'rgba(0,0,0,0)');
+    g.addColorStop(0,'rgba(0,0,0,0.9)'); g.addColorStop(0.5,'rgba(0,0,0,0.35)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
     dctx.beginPath(); dctx.arc(x, y, 70, 0, 6.283); dctx.fill();
   }
-
   dctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(darkCv, 0, 0);
 
-  // тёплое свечение поверх
   if(state !== 'dead'){
-    const px = player.x + player.w/2 - cam.x;
-    const py = player.y + player.h/2;
+    const px = player.x + player.w/2 - cam.x, py = player.y + player.h/2;
     const R = lightRadius();
     ctx.globalCompositeOperation = 'lighter';
     const g = ctx.createRadialGradient(px, py, 0, px, py, R*0.95);
-    g.addColorStop(0,   'rgba(255,205,110,0.16)');
-    g.addColorStop(0.5, 'rgba(255,175,70,0.06)');
-    g.addColorStop(1,   'rgba(255,150,50,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(px-R, py-R, R*2, R*2);
+    g.addColorStop(0,'rgba(255,205,110,0.16)'); g.addColorStop(0.5,'rgba(255,175,70,0.06)');
+    g.addColorStop(1,'rgba(255,150,50,0)');
+    ctx.fillStyle = g; ctx.fillRect(px-R, py-R, R*2, R*2);
     ctx.globalCompositeOperation = 'source-over';
   }
 }
 
-/* ---- HUD ---- */
 function drawHUD(){
   if(state === 'title') return;
-
   const w = 92, h = 7, x = 10, y = 10;
-
-  ctx.fillStyle = 'rgba(6,8,18,0.75)';
-  ctx.fillRect(x-2, y-2, w+4, h+4);
-  ctx.fillStyle = '#1b2138';
-  ctx.fillRect(x, y, w, h);
-
+  ctx.fillStyle = 'rgba(6,8,18,0.75)'; ctx.fillRect(x-2, y-2, w+4, h+4);
+  ctx.fillStyle = '#1b2138'; ctx.fillRect(x, y, w, h);
   const pct = player.light / 100;
   const col = pct > 0.5 ? '#ffd76a' : pct > 0.22 ? '#ff9a3c' : '#ff4d5e';
-  ctx.fillStyle = col;
-  ctx.fillRect(x, y, Math.round(w*pct), h);
+  ctx.fillStyle = col; ctx.fillRect(x, y, Math.round(w*pct), h);
   ctx.fillStyle = 'rgba(255,255,255,0.25)';
   ctx.fillRect(x, y, Math.round(w*pct), 2);
-
-  ctx.fillStyle = '#7f8bb0';
-  ctx.font = '8px "Courier New", monospace';
+  ctx.fillStyle = '#7f8bb0'; ctx.font = '8px "Courier New", monospace';
   ctx.fillText('СВЕТ', x, y + h + 11);
 
-  // подсказка
   if(player.light < 30 && Math.floor(time*3) % 2 === 0){
     ctx.fillStyle = '#ff8b9c';
     ctx.fillText('НАЙДИ СВЕТЯЩИЙСЯ ГРИБ', VW/2 - 62, 24);
   }
-
-  // индикатор фокуса
   if(focus() && player.light > 0){
-    ctx.fillStyle = '#ffe9a3';
-    ctx.fillText('ВСПЫШКА', VW - 62, 24);
+    ctx.fillStyle = '#ffe9a3'; ctx.fillText('ВСПЫШКА', VW - 62, 24);
+  }
+
+  const ix = 10, iy = 32, iw = 60, ih = 4;
+  ctx.fillStyle = 'rgba(6,8,18,0.65)'; ctx.fillRect(ix-1, iy-1, iw+2, ih+2);
+  ctx.fillStyle = '#1b2138'; ctx.fillRect(ix, iy, iw, ih);
+  ctx.fillStyle = '#8f7bff';
+  ctx.fillRect(ix, iy, Math.round(iw * SFX.getIntensity()), ih);
+
+  const sx = VW - 12, sy = 12;
+  ctx.fillStyle = SFX.isMuted() ? '#5a3040' : '#4a6a4a';
+  ctx.fillRect(sx - 5, sy - 4, 6, 6);
+  if(!SFX.isMuted()){
+    ctx.fillStyle = '#8fe09a'; ctx.fillRect(sx - 4, sy - 3, 4, 4);
+  }
+
+  if(mutedBannerT > 0){
+    ctx.globalAlpha = Math.min(1, mutedBannerT * 2);
+    ctx.fillStyle = 'rgba(6,8,18,0.85)';
+    ctx.fillRect(VW/2 - 42, VH - 30, 84, 16);
+    ctx.fillStyle = '#ffd76a'; ctx.textAlign = 'center';
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillText(SFX.isMuted() ? 'ЗВУК ВЫКЛ' : 'ЗВУК ВКЛ', VW/2, VH - 19);
+    ctx.textAlign = 'left'; ctx.globalAlpha = 1;
   }
 }
 
-/* ---- ЭКРАНЫ ---- */
 function drawTitle(){
-  ctx.fillStyle = 'rgba(3,4,12,0.86)';
-  ctx.fillRect(0,0,VW,VH);
-
+  ctx.fillStyle = 'rgba(3,4,12,0.86)'; ctx.fillRect(0,0,VW,VH);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 20px "Courier New", monospace';
+  ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 20px "Courier New", monospace';
   ctx.fillText('ХРОНИКИ', VW/2, 70);
   ctx.fillText('ЗАБЫТОГО СВЕТА', VW/2, 96);
-
-  ctx.fillStyle = '#5a6a94';
-  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = '#5a6a94'; ctx.font = '9px "Courier New", monospace';
   ctx.fillText('Солнце погасло. Ты — последняя искра.', VW/2, 124);
-
   ctx.fillStyle = '#8fa0c8';
-  ctx.font = '9px "Courier New", monospace';
   ctx.fillText('A / D  или  ← →   — движение', VW/2, 158);
   ctx.fillText('W / ↑ / ПРОБЕЛ    — прыжок (двойной)', VW/2, 174);
   ctx.fillText('SHIFT             — вспышка (жжёт свет)', VW/2, 190);
-  ctx.fillText('R                 — начать заново', VW/2, 206);
-
+  ctx.fillText('R — заново        M — звук', VW/2, 206);
   const a = 0.5 + 0.5*Math.sin(time*3);
   ctx.globalAlpha = a;
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 11px "Courier New", monospace';
+  ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 11px "Courier New", monospace';
   ctx.fillText('НАЖМИ ПРОБЕЛ', VW/2, 242);
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'left';
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
 }
 
 function drawDead(){
-  ctx.fillStyle = 'rgba(20,0,10,0.72)';
-  ctx.fillRect(0,0,VW,VH);
-
+  ctx.fillStyle = 'rgba(20,0,10,0.72)'; ctx.fillRect(0,0,VW,VH);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff6b8a';
-  ctx.font = 'bold 18px "Courier New", monospace';
+  ctx.fillStyle = '#ff6b8a'; ctx.font = 'bold 18px "Courier New", monospace';
   ctx.fillText('СВЕТ УГАС', VW/2, 118);
-
-  ctx.fillStyle = '#8fa0c8';
-  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = '#8fa0c8'; ctx.font = '9px "Courier New", monospace';
   ctx.fillText('Тьма поглотила странника...', VW/2, 142);
-
   const a = 0.5 + 0.5*Math.sin(time*4);
   ctx.globalAlpha = a;
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 10px "Courier New", monospace';
+  ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 10px "Courier New", monospace';
   ctx.fillText('R — ПОПРОБОВАТЬ СНОВА', VW/2, 178);
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'left';
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
 }
 
 function drawWin(){
-  ctx.fillStyle = 'rgba(30,20,0,0.68)';
-  ctx.fillRect(0,0,VW,VH);
-
+  ctx.fillStyle = 'rgba(30,20,0,0.68)'; ctx.fillRect(0,0,VW,VH);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffe9a3';
-  ctx.font = 'bold 18px "Courier New", monospace';
+  ctx.fillStyle = '#ffe9a3'; ctx.font = 'bold 18px "Courier New", monospace';
   ctx.fillText('ИСКРА ВОЗВРАЩЕНА', VW/2, 110);
-
-  ctx.fillStyle = '#c9d4e8';
-  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = '#c9d4e8'; ctx.font = '9px "Courier New", monospace';
   ctx.fillText('Алтарь принял твой свет.', VW/2, 136);
   ctx.fillText('Но это лишь начало пути...', VW/2, 152);
-
   const a = 0.5 + 0.5*Math.sin(time*4);
   ctx.globalAlpha = a;
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 10px "Courier New", monospace';
+  ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 10px "Courier New", monospace';
   ctx.fillText('R — ИГРАТЬ СНОВА', VW/2, 196);
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'left';
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
 }
 
-/* ---------------- РЕНДЕР ---------------- */
 function render(){
   ctx.save();
-
-  // тряска экрана
   if(shake > 0.2){
-    ctx.translate(
-      Math.round(rand(-shake, shake)),
-      Math.round(rand(-shake, shake))
-    );
+    ctx.translate(Math.round(rand(-shake, shake)), Math.round(rand(-shake, shake)));
   }
-
-  drawBackground();
-  drawPlatforms();
-  drawShrooms();
-  drawShards();
-  drawAltar();
-  drawEnemies();
-  drawMotes();
-  drawPlayer();
-  drawParticles();
-  drawDarkness();
-  drawHUD();
-
+  drawBackground(); drawPlatforms(); drawShrooms(); drawShards(); drawAltar();
+  drawEnemies(); drawMotes(); drawPlayer(); drawParticles(); drawDarkness(); drawHUD();
   ctx.restore();
 
   if(state === 'title') drawTitle();
@@ -790,15 +982,13 @@ function render(){
   if(state === 'win')   drawWin();
 }
 
-/* ---------------- ЦИКЛ ---------------- */
-let last = performance.now();
-let acc = 0;
+/* ====================== ЦИКЛ ====================== */
+let last = performance.now(), acc = 0;
 const STEP = 1/60;
 
 function loop(now){
   requestAnimationFrame(loop);
-  let dt = (now - last) / 1000;
-  last = now;
+  let dt = (now - last) / 1000; last = now;
   if(dt > 0.1) dt = 0.1;
 
   acc += dt;
@@ -806,8 +996,7 @@ function loop(now){
   while(acc >= STEP && guard++ < 5){
     if(state === 'title' && jumpBuffer > 0){
       jumpBuffer = 0;
-      reset();
-      state = 'play';
+      reset(); state = 'play'; SFX.init();
     }
     update(STEP);
     acc -= STEP;
@@ -815,7 +1004,6 @@ function loop(now){
   render();
 }
 
-/* ---------------- СТАРТ ---------------- */
 reset();
 requestAnimationFrame(loop);
 
