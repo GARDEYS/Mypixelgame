@@ -17,9 +17,8 @@
 "use strict";
 
 /* =========================================================
-   ХРОНИКИ ЗАБЫТОГО СВЕТА
-   Платформер-головоломка со светом, 4 типами врагов,
-   процедурным звуком, чиптюн-музыкой и эхом.
+   ХРОНИКИ ЗАБЫТОГО СВЕТА — полная версия
+   Сюжет · 2 уровня · Босс · Звук · Реактивная музыка
    ========================================================= */
 
 /* ====================== АУДИО-ДВИЖОК ====================== */
@@ -31,12 +30,8 @@ const SFX = (() => {
   let enabled = true, muted = false;
   let noiseBuf = null, lastHitT = 0;
 
-  let musicIntensity = 0;
-  let musicIntensitySm = 0;
-
-  let musicTimer = null;
-  let nextNoteTime = 0;
-  let step = 0;
+  let musicIntensity = 0, musicIntensitySm = 0;
+  let musicTimer = null, nextNoteTime = 0, step = 0;
   const BPM = 72;
   const STEP_DUR = 60 / BPM / 2;
   const LOOKAHEAD = 0.12;
@@ -49,7 +44,6 @@ const SFX = (() => {
     'F4':349.23,'G4':392.00,'A4':440.00,'B4':493.88,
     'C5':523.25,'D5':587.33,'E5':659.25,'G5':783.99,'A5':880.00
   };
-
   const MELODY = [
     'A4',null,'E5',null, 'C5',null,'A4',null,
     'F4',null,'C5',null, 'A4',null,'F4',null,
@@ -63,10 +57,8 @@ const SFX = (() => {
     'G2',null,null,null,'G2',null,null,null
   ];
   const PADS = [
-    ['A3','C4','E4'],
-    ['F3','A3','C4'],
-    ['C4','E4','G4'],
-    ['G3','B3','D4']
+    ['A3','C4','E4'],['F3','A3','C4'],
+    ['C4','E4','G4'],['G3','B3','D4']
   ];
   const ARP = ['A5','C5','E5','G5'];
 
@@ -75,9 +67,7 @@ const SFX = (() => {
     if(ac){ if(ac.state === 'suspended') ac.resume(); return ac; }
     try{
       ac = new (window.AudioContext || window.webkitAudioContext)();
-
-      master = ac.createGain();
-      master.gain.value = 0.34;
+      master = ac.createGain(); master.gain.value = 0.34;
       master.connect(ac.destination);
 
       reverb = ac.createConvolver();
@@ -90,19 +80,15 @@ const SFX = (() => {
       input.connect(wetSend); wetSend.connect(reverb);
       reverb.connect(master);
 
-      musicGain = ac.createGain();
-      musicGain.gain.value = 0.0001;
+      musicGain = ac.createGain(); musicGain.gain.value = 0.0001;
       musicGain.connect(input);
 
       layerBase = ac.createGain(); layerBase.gain.value = 1.0;
       layerPad  = ac.createGain(); layerPad.gain.value  = 0.0;
       layerArp  = ac.createGain(); layerArp.gain.value  = 0.0;
       layerPerc = ac.createGain(); layerPerc.gain.value = 0.0;
-
-      layerBase.connect(musicGain);
-      layerPad.connect(musicGain);
-      layerArp.connect(musicGain);
-      layerPerc.connect(musicGain);
+      layerBase.connect(musicGain); layerPad.connect(musicGain);
+      layerArp.connect(musicGain);  layerPerc.connect(musicGain);
     }catch(e){ enabled = false; }
     return ac;
   }
@@ -184,8 +170,7 @@ const SFX = (() => {
       o.frequency.value = f;
       const g = c.createGain();
       g.gain.value = i === 2 ? 0.35 : 0.55;
-      o.connect(g); g.connect(lp);
-      o.start(t);
+      o.connect(g); g.connect(lp); o.start(t);
     });
 
     const lfo = c.createOscillator();
@@ -198,8 +183,7 @@ const SFX = (() => {
 
   function playNote(freq, t, dur, type, vol, dest){
     const o = ac.createOscillator();
-    o.type = type;
-    o.frequency.value = freq;
+    o.type = type; o.frequency.value = freq;
     const g = ac.createGain();
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + 0.015);
@@ -210,8 +194,7 @@ const SFX = (() => {
   }
 
   function kickPerc(t){
-    const o = ac.createOscillator();
-    const g = ac.createGain();
+    const o = ac.createOscillator(), g = ac.createGain();
     o.frequency.setValueAtTime(120, t);
     o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
     g.gain.setValueAtTime(0.0001, t);
@@ -220,7 +203,6 @@ const SFX = (() => {
     o.connect(g); g.connect(layerPerc);
     o.start(t); o.stop(t + 0.22);
   }
-
   function hatPerc(t){
     const src = ac.createBufferSource();
     src.buffer = getNoise(ac);
@@ -291,31 +273,19 @@ const SFX = (() => {
 
   return {
     init(){ ensure(); startAmbient(); startMusic(); },
-
-    setIntensity(v){
-      musicIntensity = v < 0 ? 0 : v > 1 ? 1 : v;
-    },
+    setIntensity(v){ musicIntensity = v < 0 ? 0 : v > 1 ? 1 : v; },
     getIntensity(){ return musicIntensitySm; },
-
-    toggleMute(){
-      muted = !muted;
-      if(master) master.gain.value = muted ? 0 : 0.34;
-      return muted;
-    },
+    toggleMute(){ muted = !muted; if(master) master.gain.value = muted ? 0 : 0.34; return muted; },
     isMuted(){ return muted; },
 
-    jump(){     tone(320, 0.10, 'square',   0.16, 520); },
-    djump(){    tone(480, 0.12, 'square',   0.15, 760);
-                tone(720, 0.09, 'triangle', 0.09, 900, 0.03); },
-    land(){     noise(0.10, 0.16, 900, 90, 1.0); },
-
+    jump(){ tone(320, 0.10, 'square', 0.16, 520); },
+    djump(){ tone(480, 0.12, 'square', 0.15, 760); tone(720, 0.09, 'triangle', 0.09, 900, 0.03); },
+    land(){ noise(0.10, 0.16, 900, 90, 1.0); },
     footstep(side){
       const c = ensure(); if(!c || muted) return;
       const t = c.currentTime;
-      const src = c.createBufferSource();
-      src.buffer = getNoise(c);
-      const flt = c.createBiquadFilter();
-      flt.type = 'lowpass';
+      const src = c.createBufferSource(); src.buffer = getNoise(c);
+      const flt = c.createBiquadFilter(); flt.type = 'lowpass';
       const f0 = side ? 780 : 1000;
       flt.frequency.setValueAtTime(f0, t);
       flt.frequency.exponentialRampToValueAtTime(180, t + 0.06);
@@ -326,30 +296,39 @@ const SFX = (() => {
       src.connect(flt); flt.connect(g); g.connect(input);
       src.start(t); src.stop(t + 0.1);
     },
-
-    flash(){    noise(0.28, 0.20, 5000, 400, 1.5);
-                tone(880, 0.22, 'triangle', 0.10, 1600, 0.01);
-                tone(1320, 0.18, 'sine',    0.06, 2200, 0.03); },
+    flash(){ noise(0.28, 0.20, 5000, 400, 1.5);
+             tone(880, 0.22, 'triangle', 0.10, 1600, 0.01);
+             tone(1320, 0.18, 'sine', 0.06, 2200, 0.03); },
     hitEnemy(){ const now = performance.now();
                 if(now - lastHitT < 55) return; lastHitT = now;
                 noise(0.06, 0.13, 2400, 500);
                 tone(420, 0.05, 'square', 0.08, 260); },
     killEnemy(){ tone(260, 0.18, 'sawtooth', 0.18, 90);
                  noise(0.16, 0.14, 1800, 200, 1.1); },
-    hurt(){     tone(180, 0.30, 'sawtooth', 0.22, 70);
-                noise(0.22, 0.18, 1400, 120, 1.0); },
-    shroom(){   [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
-                  tone(f, 0.22, 'triangle', 0.14, null, i*0.05)); },
-    shard(){    tone(880, 0.07, 'triangle', 0.14, 1320);
-                tone(1320, 0.12, 'sine', 0.10, null, 0.05); },
-    death(){    tone(220, 0.9, 'sawtooth', 0.22, 40);
-                noise(0.8, 0.16, 1200, 60, 0.9);
-                tone(110, 1.2, 'sine', 0.14, 30, 0.1); },
-    win(){      [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
-                  tone(f, 0.4, 'triangle', 0.16, null, i*0.11);
-                  tone(f*2, 0.3, 'sine', 0.05, null, i*0.11 + 0.02);
-                });
-                noise(0.6, 0.10, 6000, 800, 1.4, 0.05); },
+    hurt(){ tone(180, 0.30, 'sawtooth', 0.22, 70);
+            noise(0.22, 0.18, 1400, 120, 1.0); },
+    shroom(){ [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
+                tone(f, 0.22, 'triangle', 0.14, null, i*0.05)); },
+    shard(){ tone(880, 0.07, 'triangle', 0.14, 1320);
+             tone(1320, 0.12, 'sine', 0.10, null, 0.05); },
+    death(){ tone(220, 0.9, 'sawtooth', 0.22, 40);
+             noise(0.8, 0.16, 1200, 60, 0.9);
+             tone(110, 1.2, 'sine', 0.14, 30, 0.1); },
+    bossRoar(){ tone(80, 1.4, 'sawtooth', 0.28, 50);
+                tone(60, 1.6, 'sine', 0.18, 40, 0.05);
+                noise(0.9, 0.20, 900, 80, 0.9); },
+    bossHit(){ noise(0.12, 0.14, 3000, 400);
+               tone(300, 0.10, 'square', 0.12, 180); },
+    bossPhase(){ tone(120, 0.6, 'sawtooth', 0.24, 60);
+                 tone(180, 0.4, 'square', 0.14, 90, 0.1);
+                 noise(0.5, 0.18, 2200, 200, 1.2); },
+    storyBlip(){ tone(660, 0.05, 'triangle', 0.10, 720); },
+    storyNext(){ tone(440, 0.10, 'triangle', 0.12, 660); },
+    win(){ [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
+              tone(f, 0.4, 'triangle', 0.16, null, i*0.11);
+              tone(f*2, 0.3, 'sine', 0.05, null, i*0.11 + 0.02);
+            });
+            noise(0.6, 0.10, 6000, 800, 1.4, 0.05); },
   };
 })();
 
@@ -372,7 +351,7 @@ addEventListener('resize', resize); resize();
 
 /* ====================== ВВОД ====================== */
 const keys = {};
-let jumpBuffer = 0, restartBuffer = 0;
+let jumpBuffer = 0, restartBuffer = 0, confirmBuffer = 0;
 let prevFocus = false;
 let mutedBannerT = 0;
 
@@ -381,7 +360,9 @@ addEventListener('keydown', e => {
   SFX.init();
   if(keys[e.code]) return;
   keys[e.code] = true;
-  if(e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') jumpBuffer = 0.14;
+  if(e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space'){
+    jumpBuffer = 0.14; confirmBuffer = 0.14;
+  }
   if(e.code === 'KeyR' || e.code === 'Enter') restartBuffer = 0.14;
   if(e.code === 'KeyM'){ SFX.toggleMute(); mutedBannerT = 1.6; }
 });
@@ -391,49 +372,134 @@ const left  = () => keys['KeyA'] || keys['ArrowLeft'];
 const right = () => keys['KeyD'] || keys['ArrowRight'];
 const focus = () => keys['ShiftLeft'] || keys['ShiftRight'];
 
-/* ====================== УРОВЕНЬ ====================== */
-const LEVEL_W  = 2600;
-const GROUND_Y = 230;
+/* ====================== ДАННЫЕ УРОВНЕЙ ====================== */
+const LEVELS = {
+  1: {
+    width: 2600,
+    groundY: 230,
+    spawn: {x:40, y:180},
+    platforms: [
+      {x:0,    y:230, w:400, h:40},{x:455,  y:230, w:250, h:40},
+      {x:760,  y:230, w:170, h:40},{x:985,  y:230, w:400, h:40},
+      {x:1440, y:230, w:300, h:40},{x:1795, y:230, w:805, h:40},
+      {x:250,  y:180, w:70,  h:10},{x:390,  y:148, w:60,  h:10},
+      {x:545,  y:175, w:80,  h:10},{x:695,  y:140, w:70,  h:10},
+      {x:845,  y:178, w:90,  h:10},{x:990,  y:140, w:80,  h:10},
+      {x:1140, y:168, w:90,  h:10},{x:1300, y:132, w:80,  h:10},
+      {x:1440, y:162, w:90,  h:10},{x:1600, y:178, w:90,  h:10},
+      {x:1760, y:138, w:100, h:10},{x:1950, y:178, w:90,  h:10},
+      {x:2100, y:135, w:110, h:10},{x:2280, y:172, w:100, h:10},
+    ],
+    shrooms: [
+      {x:150,y:222},{x:600,y:222},{x:1050,y:222},{x:1520,y:222},
+      {x:1900,y:222},{x:2400,y:222},{x:415,y:140},{x:1015,y:132},{x:1795,y:130},
+    ],
+    shards: [
+      {x:300,y:150},{x:760,y:150},{x:1220,y:200},{x:1660,y:150},
+      {x:2020,y:190},{x:2250,y:110},{x:1340,y:100},
+    ],
+    enemies: [
+      {x:330,y:180,type:'crawler'},{x:560,y:195,type:'crawler'},
+      {x:730,y:185,type:'hopper'},{x:900,y:160,type:'crawler'},
+      {x:1120,y:180,type:'sentinel'},{x:1320,y:200,type:'hopper'},
+      {x:1530,y:170,type:'devourer'},{x:1720,y:190,type:'crawler'},
+      {x:1950,y:160,type:'hopper'},{x:2120,y:185,type:'sentinel'},
+      {x:2300,y:170,type:'devourer'},
+    ],
+    altar: {x:2500, y:186, w:34, h:44},
+    hasBoss: false
+  },
+  2: {
+    width: 900,
+    groundY: 230,
+    spawn: {x:60, y:180},
+    platforms: [
+      {x:0,   y:230, w:900, h:40},
+      {x:80,  y:170, w:90,  h:10},
+      {x:730, y:170, w:90,  h:10},
+      {x:340, y:130, w:70,  h:10},
+      {x:490, y:130, w:70,  h:10},
+    ],
+    shrooms: [
+      {x:130,y:222},{x:770,y:222},{x:280,y:162},{x:620,y:162},
+      {x:450,y:122},
+    ],
+    shards: [
+      {x:375,y:105},{x:525,y:105},
+    ],
+    enemies: [],
+    altar: null,
+    hasBoss: true,
+    boss: {x: 720, y: 166}
+  }
+};
 
-const platforms = [
-  {x:0,    y:GROUND_Y, w:400, h:40},{x:455,  y:GROUND_Y, w:250, h:40},
-  {x:760,  y:GROUND_Y, w:170, h:40},{x:985,  y:GROUND_Y, w:400, h:40},
-  {x:1440, y:GROUND_Y, w:300, h:40},{x:1795, y:GROUND_Y, w:805, h:40},
-  {x:250,  y:180, w:70,  h:10},{x:390,  y:148, w:60,  h:10},
-  {x:545,  y:175, w:80,  h:10},{x:695,  y:140, w:70,  h:10},
-  {x:845,  y:178, w:90,  h:10},{x:990,  y:140, w:80,  h:10},
-  {x:1140, y:168, w:90,  h:10},{x:1300, y:132, w:80,  h:10},
-  {x:1440, y:162, w:90,  h:10},{x:1600, y:178, w:90,  h:10},
-  {x:1760, y:138, w:100, h:10},{x:1950, y:178, w:90,  h:10},
-  {x:2100, y:135, w:110, h:10},{x:2280, y:172, w:100, h:10},
-];
-
-const shroomSpawns = [
-  {x:150,y:222},{x:600,y:222},{x:1050,y:222},{x:1520,y:222},
-  {x:1900,y:222},{x:2400,y:222},{x:415,y:140},{x:1015,y:132},{x:1795,y:130},
-];
-const shardSpawns = [
-  {x:300,y:150},{x:760,y:150},{x:1220,y:200},{x:1660,y:150},
-  {x:2020,y:190},{x:2250,y:110},{x:1340,y:100},
-];
-
-const enemySpawns = [
-  {x:330,  y:180, type:'crawler'},
-  {x:560,  y:195, type:'crawler'},
-  {x:730,  y:185, type:'hopper'},
-  {x:900,  y:160, type:'crawler'},
-  {x:1120, y:180, type:'sentinel'},
-  {x:1320, y:200, type:'hopper'},
-  {x:1530, y:170, type:'devourer'},
-  {x:1720, y:190, type:'crawler'},
-  {x:1950, y:160, type:'hopper'},
-  {x:2120, y:185, type:'sentinel'},
-  {x:2300, y:170, type:'devourer'},
-];
-const ALTAR = {x:2500, y:186, w:34, h:44};
+/* ====================== СЮЖЕТ ====================== */
+const STORY = {
+  intro: [
+    { art: 'stars', lines: [
+      'Тысячу лет назад солнце погасло.',
+      'Королевство Аврора погрузилось во тьму.'
+    ]},
+    { art: 'void', lines: [
+      'Люди забыли тепло.',
+      'Дети рождались, не увидев света.'
+    ]},
+    { art: 'hero', lines: [
+      'Ты — Люмен, последний носитель',
+      'Искры Первого Пламени.'
+    ]},
+    { art: 'staff', lines: [
+      'Найди Алтарь Древних.',
+      'Зажги солнце заново — или растворись во тьме.'
+    ]},
+  ],
+  interlude: [
+    { art: 'altar', lines: [
+      'Первый Алтарь вспыхнул.',
+      'Но свет не вернулся — лишь тень отступила на шаг.'
+    ]},
+    { art: 'void', lines: [
+      'Из глубины поднялся Хранитель Пепла —',
+      'тот, кто пожрал само Солнце.'
+    ]},
+    { art: 'hero', lines: [
+      'Он ждёт тебя в Сердце Тьмы.',
+      'Не дай ему поглотить Искру.'
+    ]},
+  ],
+  ending: [
+    { art: 'altar', lines: [
+      'Хранитель пал.',
+      'Его тело рассыпалось искрами, и тьма отступила.'
+    ]},
+    { art: 'staff', lines: [
+      'Ты поднял посох. Последний луч',
+      'вырвался из него и коснулся неба.'
+    ]},
+    { art: 'sun', lines: [
+      'Солнце вернулось.',
+      'Дети впервые увидели свет.'
+    ]},
+    { art: 'hero', lines: [
+      'Но ты знал: где-то в глубине, во тьме,',
+      'оно снова ждёт своего часа.'
+    ]},
+    { art: 'sun', lines: [
+      'КОНЕЦ',
+      '',
+      'Но свет всегда возвращается.'
+    ]},
+  ]
+};
 
 /* ====================== СОСТОЯНИЕ ====================== */
-let state = 'title';
+let state = 'title';         // title | story | play | dead | win
+let storyPhase = 'intro';    // intro | interlude | ending
+let storySlide = 0;
+let storyTimer = 0;
+let storyDone = false;
+let level = 1;
 let time = 0;
 let cam = {x:0};
 let shake = 0;
@@ -444,8 +510,15 @@ const player = {
   light:70, inv:0, dead:false
 };
 
-let enemies=[], shrooms=[], shards=[], particles=[], motes=[];
+let enemies = [], shrooms = [], shards = [], particles = [], motes = [];
 let projectiles = [];
+let platforms = [];
+let LEVEL_W = 2600;
+let GROUND_Y = 230;
+let ALTAR = null;
+let boss = null;
+let bossSpawned = false;
+let bossIntroT = 0;
 let stepTimer = 0, stepSide = 0;
 let flashWave = null;
 let flashCooldown = 0;
@@ -465,7 +538,7 @@ function burst(x,y,color,n,spd=2){
   }
 }
 
-/* ====================== ФАБРИКА ВРАГОВ ====================== */
+/* ====================== ФАБРИКИ ====================== */
 function makeEnemy(spawn){
   const base = {
     x: spawn.x, y: spawn.y, type: spawn.type,
@@ -492,18 +565,47 @@ function makeEnemy(spawn){
   }
 }
 
-/* ====================== ИНИЦИАЛИЗАЦИЯ ====================== */
-function reset(){
-  player.x = 40; player.y = 180;
+function makeBoss(spawn){
+  return {
+    x: spawn.x, y: spawn.y, w:56, h:64,
+    hp: 60, maxHp: 60,
+    phase: 1,
+    state: 'idle',
+    stateT: 0,
+    idleDur: 1.4,
+    flash: 0,
+    vx: 0, vy: 0,
+    dead: false,
+    facing: -1,
+    attackCount: 0,
+    hitFlash: 0
+  };
+}
+
+/* ====================== ЗАГРУЗКА УРОВНЯ ====================== */
+function loadLevel(n){
+  level = n;
+  const L = LEVELS[n];
+  LEVEL_W = L.width;
+  GROUND_Y = L.groundY;
+  platforms = L.platforms.slice();
+  ALTAR = L.altar;
+
+  player.x = L.spawn.x; player.y = L.spawn.y;
   player.vx = 0; player.vy = 0;
   player.onGround = false; player.jumps = 0;
-  player.light = 70; player.inv = 0; player.face = 1;
+  player.light = n === 2 ? 100 : 70;
+  player.inv = 0; player.face = 1;
   player.dead = false;
 
-  enemies = enemySpawns.map(s => makeEnemy(s));
+  enemies = L.enemies.map(s => makeEnemy(s));
   projectiles = [];
-  shrooms = shroomSpawns.map(s => ({x:s.x, y:s.y, r:9, used:false, timer:0}));
-  shards  = shardSpawns.map(s => ({x:s.x, y:s.y, taken:false, t:Math.random()*6.28}));
+  shrooms = L.shrooms.map(s => ({x:s.x, y:s.y, r:9, used:false, timer:0}));
+  shards = L.shards.map(s => ({x:s.x, y:s.y, taken:false, t:Math.random()*6.28}));
+
+  boss = L.hasBoss ? makeBoss(L.boss) : null;
+  bossSpawned = false;
+  bossIntroT = 0;
 
   particles = []; motes = [];
   for(let i=0;i<70;i++){
@@ -550,6 +652,215 @@ function lightRadius(){
   return base * mult * flick;
 }
 
+/* ====================== ВЫЗОВЫ БОССА ====================== */
+function bossSpread(){
+  const cx = boss.x + boss.w/2, cy = boss.y + boss.h/2;
+  const px = player.x + player.w/2, py = player.y + player.h/2;
+  const baseAng = Math.atan2(py - cy, px - cx);
+  const count = boss.phase === 1 ? 5 : 7;
+  const spread = 0.6;
+  for(let i = 0; i < count; i++){
+    const a = baseAng + (i/(count-1) - 0.5) * spread;
+    projectiles.push({
+      x: cx, y: cy,
+      vx: Math.cos(a) * 1.7,
+      vy: Math.sin(a) * 1.7,
+      life: 4.0, from: 'boss'
+    });
+  }
+  burst(cx, cy, '#ff8c5a', 8, 1.6);
+  SFX.bossHit();
+}
+
+function bossSummon(){
+  const count = boss.phase === 1 ? 2 : 3;
+  for(let i = 0; i < count; i++){
+    const sx = boss.x + rand(-60, 60);
+    const sy = boss.y + 30;
+    const type = Math.random() < 0.6 ? 'crawler' : 'hopper';
+    const e = makeEnemy({x:sx, y:sy, type});
+    enemies.push(e);
+    burst(sx+7, sy+7, '#c08cff', 10, 1.8);
+  }
+  SFX.bossRoar();
+}
+
+function bossSlam(){
+  boss.vy = -6.5;
+  boss.vx = 0;
+  burst(boss.x + boss.w/2, boss.y + boss.h, '#ff6a2a', 12, 2.2);
+}
+
+function bossSlamImpact(){
+  const cx = boss.x + boss.w/2, cy = boss.y + boss.h;
+  const count = boss.phase === 1 ? 8 : 12;
+  for(let i = 0; i < count; i++){
+    const a = (i / count) * Math.PI * 2;
+    projectiles.push({
+      x: cx, y: cy,
+      vx: Math.cos(a) * 1.5,
+      vy: Math.sin(a) * 1.5,
+      life: 3.0, from: 'boss'
+    });
+  }
+  shake = Math.max(shake, 8);
+  SFX.bossPhase();
+  for(let i = 0; i < 24; i++) burst(cx, cy, '#ff9a5c', 1, 3);
+}
+
+function bossCharge(){
+  const px = player.x + player.w/2;
+  const cx = boss.x + boss.w/2;
+  boss.vx = (px < cx ? -1 : 1) * 3.4;
+  boss.facing = px < cx ? -1 : 1;
+  burst(boss.x + boss.w/2, boss.y + boss.h - 4, '#ff6a2a', 14, 2);
+  SFX.bossRoar();
+}
+
+/* ====================== ОБНОВЛЕНИЕ БОССА ====================== */
+function updateBoss(dt){
+  if(!boss || boss.dead) return;
+
+  boss.hitFlash = Math.max(0, boss.hitFlash - dt*2);
+  boss.flash = Math.max(0, boss.flash - dt*2);
+
+  // Проверка перехода во 2 фазу
+  if(boss.phase === 1 && boss.hp <= boss.maxHp * 0.5){
+    boss.phase = 2;
+    boss.idleDur = 0.75;
+    shake = Math.max(shake, 10);
+    SFX.bossPhase();
+    burst(boss.x + boss.w/2, boss.y + boss.h/2, '#ff9a5c', 30, 3);
+    // Отбрасываем игрока
+    player.vx = (player.x < boss.x ? -1 : 1) * 5;
+    player.vy = -5;
+    player.inv = 1.2;
+  }
+
+  const cx = boss.x + boss.w/2, cy = boss.y + boss.h/2;
+  const px = player.x + player.w/2, py = player.y + player.h/2;
+  const dist = Math.hypot(px - cx, py - cy) || 1;
+  const R = lightRadius();
+  const lit = dist < R * 1.15;
+
+  // Урон от света
+  if(lit){
+    boss.hp -= 3.0 * dt;
+    boss.flash = 1;
+    if(Math.random() < 0.15) SFX.hitEnemy();
+  }
+
+  // Вспышка - особый урон
+  if(flashWave && !boss.flashDone){
+    const d = Math.hypot(cx - flashWave.x, cy - flashWave.y);
+    if(d < 180 && flashWave.life > flashWave.maxLife - 0.1){
+      const power = 1 - d/180;
+      boss.hp -= 4 + 8 * power;
+      boss.hitFlash = 1;
+      shake = Math.max(shake, 6);
+    }
+  }
+
+  if(boss.hp <= 0){
+    boss.dead = true;
+    shake = 16;
+    SFX.killEnemy(); SFX.bossRoar();
+    for(let i = 0; i < 60; i++) burst(cx, cy, i%2 ? '#ff9a5c' : '#ffe9a3', 1, 4);
+    // Победа через 1.5 сек
+    setTimeout(() => { if(state === 'play') winLevel2(); }, 1500);
+    return;
+  }
+
+  // Логика состояний
+  boss.stateT -= dt;
+
+  if(boss.state === 'idle'){
+    // Тормозим
+    boss.vx *= 0.85;
+    if(boss.stateT <= 0){
+      // Выбор атаки
+      boss.attackCount++;
+      const roll = Math.random();
+      if(boss.phase === 1){
+        if(roll < 0.55)      boss.state = 'spread';
+        else if(roll < 0.85) boss.state = 'summon';
+        else                 boss.state = 'charge';
+      } else {
+        if(roll < 0.35)      boss.state = 'spread';
+        else if(roll < 0.55) boss.state = 'summon';
+        else if(roll < 0.75) boss.state = 'charge';
+        else                 boss.state = 'slam';
+      }
+      boss.stateT = boss.state === 'idle' ? boss.idleDur : 0.6;
+    }
+  }
+  else if(boss.state === 'spread'){
+    if(boss.stateT < 0.55 && !boss._fired){
+      bossSpread(); boss._fired = true;
+    }
+    if(boss.stateT <= 0){
+      boss.state = 'idle'; boss.stateT = boss.idleDur; boss._fired = false;
+    }
+  }
+  else if(boss.state === 'summon'){
+    if(boss.stateT < 0.4 && !boss._fired){
+      bossSummon(); boss._fired = true;
+    }
+    if(boss.stateT <= 0){
+      boss.state = 'idle'; boss.stateT = boss.idleDur; boss._fired = false;
+    }
+  }
+  else if(boss.state === 'charge'){
+    if(!boss._fired){ bossCharge(); boss._fired = true; }
+    // Останавливается о стены
+    if(boss.x <= 4 || boss.x + boss.w >= LEVEL_W - 4) boss.stateT = 0;
+    if(boss.stateT <= 0){
+      boss.state = 'idle'; boss.stateT = boss.idleDur; boss._fired = false;
+      boss.vx = 0;
+    }
+  }
+  else if(boss.state === 'slam'){
+    if(!boss._fired){ bossSlam(); boss._fired = true; }
+    // Ждём приземления
+    if(boss.onGround && boss.vy === 0 && boss.stateT < 0.5){
+      bossSlamImpact();
+      boss.state = 'idle'; boss.stateT = boss.idleDur; boss._fired = false;
+    }
+    if(boss.stateT <= 0){
+      boss.state = 'idle'; boss.stateT = boss.idleDur; boss._fired = false;
+    }
+  }
+
+  // Физика босса
+  boss.vy += 0.55;
+  if(boss.vy > 12) boss.vy = 12;
+  boss.x += boss.vx;
+  boss.y += boss.vy;
+
+  // Коллизии
+  boss.onGround = false;
+  for(const p of platforms){
+    if(overlap(boss, p)){
+      if(boss.vy > 0){ boss.y = p.y - boss.h; boss.onGround = true; boss.vy = 0; }
+      else if(boss.vy < 0){ boss.y = p.y + p.h; boss.vy = 0; }
+    }
+  }
+  // Границы арены
+  if(boss.x < 4){ boss.x = 4; boss.vx = 0; }
+  if(boss.x + boss.w > LEVEL_W - 4){ boss.x = LEVEL_W - 4 - boss.w; boss.vx = 0; }
+
+  // Контакт с игроком
+  if(player.inv <= 0 && overlap(player, boss)){
+    player.light = Math.max(0, player.light - 20);
+    player.inv = 1.3;
+    const k = px < cx ? -1 : 1;
+    player.vx = k * 5; player.vy = -4;
+    shake = Math.max(shake, 7);
+    burst(px, py, '#ff4d7a', 14, 2.4);
+    SFX.hurt();
+  }
+}
+
 /* ====================== ОБНОВЛЕНИЕ ====================== */
 function update(dt){
   time += dt;
@@ -561,6 +872,7 @@ function update(dt){
     flashWave.r = flashWave.maxR * (1 - flashWave.life / flashWave.maxLife);
     if(flashWave.life <= 0) flashWave = null;
   }
+  if(bossIntroT > 0) bossIntroT -= dt;
 
   for(const m of motes){
     m.x += m.vx; m.y += m.vy;
@@ -574,18 +886,84 @@ function update(dt){
     if(p.life <= 0) particles.splice(i,1);
   }
 
-  /* === R — рестарт из любого состояния === */
+  /* ============ TITLE ============ */
+  if(state === 'title'){
+    if(confirmBuffer > 0){
+      confirmBuffer = 0;
+      storyPhase = 'intro';
+      storySlide = 0; storyTimer = 0; storyDone = false;
+      state = 'story';
+      SFX.storyNext();
+    }
+    return;
+  }
+
+  /* ============ STORY ============ */
+  if(state === 'story'){
+    const slides = STORY[storyPhase];
+    const cur = slides[storySlide];
+    const totalChars = cur.lines.join('').length;
+    const charTime = 0.035;
+
+    if(!storyDone){
+      storyTimer += dt;
+      const revealed = Math.floor(storyTimer / charTime);
+      const prevRevealed = Math.floor((storyTimer - dt) / charTime);
+      if(revealed > prevRevealed && revealed < totalChars && revealed % 3 === 0){
+        SFX.storyBlip();
+      }
+      if(revealed >= totalChars){
+        storyDone = true;
+      }
+    }
+
+    if(confirmBuffer > 0){
+      confirmBuffer = 0;
+      if(!storyDone){
+        storyDone = true;
+        storyTimer = totalChars * charTime + 0.1;
+      } else {
+        storySlide++;
+        storyTimer = 0;
+        storyDone = false;
+        if(storySlide >= slides.length){
+          // Конец фазовой истории
+          if(storyPhase === 'intro'){
+            loadLevel(1);
+            state = 'play';
+          } else if(storyPhase === 'interlude'){
+            loadLevel(2);
+            bossIntroT = 2.5;
+            state = 'play';
+            SFX.bossRoar();
+          } else if(storyPhase === 'ending'){
+            state = 'title';
+            storySlide = 0;
+          }
+        } else {
+          SFX.storyNext();
+        }
+      }
+    }
+    return;
+  }
+
+  /* ============ DEAD / WIN ============ */
   restartBuffer -= dt;
   if(restartBuffer > 0){
     restartBuffer = 0;
-    reset();
-    state = 'play';
+    if(state === 'dead'){
+      loadLevel(level);
+      state = 'play';
+    } else if(state === 'win'){
+      state = 'title';
+    }
     return;
   }
 
   if(state !== 'play') return;
 
-  /* --- управление --- */
+  /* ============ УПРАВЛЕНИЕ ============ */
   const speed = 2.0, accel = 0.35;
   if(left()){  player.vx -= accel; player.face = -1; }
   if(right()){ player.vx += accel; player.face =  1; }
@@ -594,7 +972,7 @@ function update(dt){
 
   const focusing = focus() && player.light > 0;
 
-  /* === ВЗРЫВ СВЕТА === */
+  /* === ВСПЫШКА === */
   if(focusing && !prevFocus && flashCooldown <= 0 && player.light > 15){
     SFX.flash();
     shake = Math.max(shake, 5);
@@ -624,9 +1002,19 @@ function update(dt){
         }
       }
     }
+    // Вспышка бьёт босса
+    if(boss && !boss.dead){
+      const bd = Math.hypot(boss.x + boss.w/2 - cx, boss.y + boss.h/2 - cy);
+      if(bd < 180){
+        const power = 1 - bd/180;
+        boss.hp -= 4 + 8 * power;
+        boss.hitFlash = 1;
+      }
+    }
   }
   prevFocus = focusing;
 
+  /* === ПРЫЖКИ === */
   jumpBuffer -= dt;
   if(jumpBuffer > 0){
     if(player.onGround){
@@ -654,7 +1042,7 @@ function update(dt){
   if(player.onGround) player.jumps = 0;
   if(player.inv > 0) player.inv -= dt;
 
-  /* --- шаги --- */
+  /* === ШАГИ === */
   const walking = player.onGround && Math.abs(player.vx) > 0.5;
   if(walking){
     stepTimer -= dt;
@@ -667,14 +1055,14 @@ function update(dt){
     stepTimer = 0;
   }
 
-  /* --- свет --- */
+  /* === СВЕТ === */
   const drain = (focusing ? 8.0 : 2.6) * dt;
   player.light = Math.max(0, player.light - drain);
 
   if(player.light <= 0){ die('Свет угас...'); return; }
   if(player.y > VH + 30){ die('Ты растворился во тьме...'); return; }
 
-  /* --- грибы --- */
+  /* === ГРИБЫ === */
   for(const s of shrooms){
     if(s.used){
       s.timer -= dt;
@@ -690,7 +1078,7 @@ function update(dt){
     }
   }
 
-  /* --- осколки --- */
+  /* === ОСКОЛКИ === */
   for(const sh of shards){
     if(sh.taken) continue;
     if(overlap(player, {x:sh.x-5, y:sh.y-5, w:10, h:10})){
@@ -701,7 +1089,7 @@ function update(dt){
     }
   }
 
-  /* --- враги --- */
+  /* === ВРАГИ === */
   const R = lightRadius();
   const px = player.x + player.w/2, py = player.y + player.h/2;
   let nearestDist = 9999;
@@ -759,7 +1147,7 @@ function update(dt){
             x: ex, y: ey,
             vx: (dx/dist) * 1.6,
             vy: (dy/dist) * 1.6,
-            life: 3.0
+            life: 3.0, from: 'sentinel'
           });
           burst(ex, ey, '#ff8c5a', 4, 1.2);
         }
@@ -772,7 +1160,6 @@ function update(dt){
       }
     }
     else {
-      // crawler + devourer
       if(lit){
         e.hp -= e.hitDmg * dt;
         e.flash = 1;
@@ -805,7 +1192,10 @@ function update(dt){
     }
   }
 
-  /* --- снаряды стражей --- */
+  /* === БОСС === */
+  if(boss && !boss.dead) updateBoss(dt);
+
+  /* === СНАРЯДЫ === */
   for(let i = projectiles.length - 1; i >= 0; i--){
     const p = projectiles[i];
     p.x += p.vx;
@@ -822,7 +1212,7 @@ function update(dt){
     if(!hitWall && player.inv <= 0 &&
        p.x > player.x && p.x < player.x+player.w &&
        p.y > player.y && p.y < player.y+player.h){
-      player.light = Math.max(0, player.light - 8);
+      player.light = Math.max(0, player.light - (p.from === 'boss' ? 12 : 8));
       player.inv = 1.1;
       burst(p.x, p.y, '#ff5c8a', 8, 1.8);
       SFX.hurt();
@@ -837,23 +1227,35 @@ function update(dt){
     }
   }
 
-  /* --- реактивная музыка --- */
+  /* === РЕАКТИВНАЯ МУЗЫКА === */
   const progress = clamp(player.x / LEVEL_W, 0, 1);
-  const danger   = clamp(1 - nearestDist / 150, 0, 1);
-  SFX.setIntensity(clamp(progress * 0.5 + danger * 0.7, 0, 1));
+  const danger = clamp(1 - nearestDist / 150, 0, 1);
+  let intensity = progress * 0.5 + danger * 0.7;
+  if(boss && !boss.dead) intensity = Math.max(intensity, 0.85);
+  SFX.setIntensity(clamp(intensity, 0, 1));
 
-  /* --- победа --- */
-  if(overlap(player, ALTAR)){
-    state = 'win';
+  /* === АЛТАРЬ (ур.1) === */
+  if(ALTAR && overlap(player, ALTAR)){
     burst(ALTAR.x+17, ALTAR.y+10, '#ffe9a3', 40, 3.5);
     shake = 8;
     SFX.win();
+    // Переход в interlude
+    storyPhase = 'interlude';
+    storySlide = 0; storyTimer = 0; storyDone = false;
+    state = 'story';
+    return;
   }
 
-  /* --- камера --- */
+  /* === КАМЕРА === */
   const targetX = clamp(player.x + player.w/2 - VW/2, 0, LEVEL_W - VW);
   cam.x += (targetX - cam.x) * 0.12;
   if(shake > 0) shake = Math.max(0, shake - dt*18);
+}
+
+function winLevel2(){
+  storyPhase = 'ending';
+  storySlide = 0; storyTimer = 0; storyDone = false;
+  state = 'story';
 }
 
 function die(msg){
@@ -872,6 +1274,12 @@ function drawBackground(){
   g.addColorStop(0, '#0a0d1e'); g.addColorStop(1, '#04050c');
   ctx.fillStyle = g; ctx.fillRect(0,0,VW,VH);
 
+  // Красноватый оттенок для арены босса
+  if(level === 2 && state === 'play'){
+    ctx.fillStyle = 'rgba(40,10,20,0.25)';
+    ctx.fillRect(0,0,VW,VH);
+  }
+
   ctx.fillStyle = '#0d1122';
   for(let i=0;i<22;i++){
     let bx = ((i*180 - cam.x*0.25) % (VW+400) + VW+400) % (VW+400) - 200;
@@ -884,7 +1292,7 @@ function drawBackground(){
   }
   const f = ctx.createLinearGradient(0, VH-70, 0, VH);
   f.addColorStop(0, 'rgba(30,40,80,0)');
-  f.addColorStop(1, 'rgba(40,55,110,0.16)');
+  f.addColorStop(1, level === 2 ? 'rgba(120,40,50,0.20)' : 'rgba(40,55,110,0.16)');
   ctx.fillStyle = f; ctx.fillRect(0, VH-70, VW, 70);
 }
 
@@ -930,6 +1338,7 @@ function drawShards(){
 }
 
 function drawAltar(){
+  if(!ALTAR) return;
   const x = Math.round(ALTAR.x - cam.x), y = ALTAR.y;
   if(x < -60 || x > VW+60) return;
   ctx.fillStyle = '#2a2440'; ctx.fillRect(x-8, y+34, 50, 8); ctx.fillRect(x-4, y+28, 42, 6);
@@ -940,6 +1349,97 @@ function drawAltar(){
   ctx.fillStyle = '#ffe9a3'; ctx.fillRect(x+14, y+10, 6, 10);
   ctx.fillStyle = `rgba(255,220,140,${0.5*pulse})`; ctx.fillRect(x+11, y+7, 12, 16);
   ctx.fillStyle = '#fffbe0'; ctx.fillRect(x+15, y+12, 4, 5);
+}
+
+function drawBoss(){
+  if(!boss || boss.dead) return;
+  const x = Math.round(boss.x - cam.x);
+  const y = Math.round(boss.y);
+  if(x < -100 || x > VW+100) return;
+
+  const fl = boss.hitFlash > 0 ? 1 : boss.flash;
+
+  // Тень под боссом
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x + 28, y + 64, 30, 6, 0, 0, 6.283);
+  ctx.fill();
+
+  // Тело
+  const body = fl ? '#8a3030' : '#1a0a14';
+  ctx.fillStyle = body;
+  ctx.fillRect(x+8, y+10, 40, 44);
+  ctx.fillRect(x+4, y+18, 48, 30);
+  ctx.fillRect(x, y+28, 56, 18);
+
+  // Рога
+  ctx.fillStyle = fl ? '#b04040' : '#2a0f0f';
+  ctx.fillRect(x+2, y-6, 8, 18);
+  ctx.fillRect(x+46, y-6, 8, 18);
+  ctx.fillRect(x-2, y-14, 8, 12);
+  ctx.fillRect(x+50, y-14, 8, 12);
+
+  // Верхняя корона/огонь
+  const crown = 0.5 + 0.5*Math.sin(time*4);
+  ctx.fillStyle = `rgba(255,90,40,${0.6*crown})`;
+  ctx.fillRect(x+16, y-4, 24, 6);
+  ctx.fillStyle = `rgba(255,180,80,${0.5*crown})`;
+  ctx.fillRect(x+20, y-8, 16, 5);
+
+  // Глаза
+  const eyeCol = boss.phase === 2 ? '#ff2020' : '#ff6030';
+  ctx.fillStyle = fl ? '#ffffff' : eyeCol;
+  ctx.fillRect(x+14, y+22, 8, 6);
+  ctx.fillRect(x+34, y+22, 8, 6);
+  ctx.fillStyle = '#ffe9a3';
+  ctx.fillRect(x+17, y+24, 3, 2);
+  ctx.fillRect(x+37, y+24, 3, 2);
+
+  // Рот
+  ctx.fillStyle = '#0a0000';
+  ctx.fillRect(x+18, y+38, 20, 6);
+  ctx.fillStyle = fl ? '#ffffff' : '#ff5c2a';
+  for(let i = 0; i < 5; i++){
+    ctx.fillRect(x+19 + i*4, y+38, 2, 3);
+    ctx.fillRect(x+19 + i*4, y+41, 2, 3);
+  }
+
+  // Аура
+  const auraA = 0.10 + 0.05*Math.sin(time*3);
+  const auraCol = boss.phase === 2 ? `rgba(255,80,40,${auraA*1.5})` : `rgba(180,60,120,${auraA})`;
+  ctx.fillStyle = auraCol;
+  ctx.beginPath(); ctx.arc(x+28, y+32, 44, 0, 6.283); ctx.fill();
+
+  // Вспышка от удара
+  if(boss.hitFlash > 0){
+    ctx.fillStyle = `rgba(255,220,180,${boss.hitFlash*0.4})`;
+    ctx.beginPath(); ctx.arc(x+28, y+32, 44, 0, 6.283); ctx.fill();
+  }
+}
+
+function drawBossHP(){
+  if(!boss || boss.dead) return;
+  const w = 300, h = 8, x = (VW - w)/2, y = 14;
+
+  ctx.fillStyle = 'rgba(6,8,18,0.85)';
+  ctx.fillRect(x-3, y-3, w+6, h+6);
+
+  ctx.fillStyle = '#2a0f18';
+  ctx.fillRect(x, y, w, h);
+
+  const pct = Math.max(0, boss.hp / boss.maxHp);
+  const col = boss.phase === 2 ? '#ff3a3a' : '#c04a2a';
+  ctx.fillStyle = col;
+  ctx.fillRect(x, y, Math.round(w*pct), h);
+
+  ctx.fillStyle = 'rgba(255,180,100,0.35)';
+  ctx.fillRect(x, y, Math.round(w*pct), 2);
+
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 8px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('ХРАНИТЕЛЬ ПЕПЛА', VW/2, y - 6);
+  ctx.textAlign = 'left';
 }
 
 function drawEnemies(){
@@ -1036,9 +1536,11 @@ function drawProjectiles(){
   for(const p of projectiles){
     const x = Math.round(p.x - cam.x), y = Math.round(p.y);
     if(x < -20 || x > VW+20) continue;
-    ctx.fillStyle = 'rgba(150,110,255,0.35)';
+    const col = p.from === 'boss' ? 'rgba(255,90,40,0.4)' : 'rgba(150,110,255,0.35)';
+    const core = p.from === 'boss' ? '#ff8c5a' : '#c8a4ff';
+    ctx.fillStyle = col;
     ctx.fillRect(x-4, y-4, 8, 8);
-    ctx.fillStyle = '#c8a4ff';
+    ctx.fillStyle = core;
     ctx.fillRect(x-2, y-2, 4, 4);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(x-1, y-1, 2, 2);
@@ -1047,32 +1549,25 @@ function drawProjectiles(){
 
 function drawFlashWave(){
   if(!flashWave) return;
-  const x = flashWave.x - cam.x;
-  const y = flashWave.y;
+  const x = flashWave.x - cam.x, y = flashWave.y;
   const a = flashWave.life / flashWave.maxLife;
 
   ctx.globalCompositeOperation = 'lighter';
 
   ctx.strokeStyle = `rgba(255,230,160,${a*0.9})`;
   ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(x, y, flashWave.r, 0, 6.283);
-  ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, flashWave.r, 0, 6.283); ctx.stroke();
 
   ctx.strokeStyle = `rgba(170,200,255,${a*0.55})`;
   ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(x, y, flashWave.r * 0.72, 0, 6.283);
-  ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, flashWave.r * 0.72, 0, 6.283); ctx.stroke();
 
   const g = ctx.createRadialGradient(x, y, 0, x, y, flashWave.r);
   g.addColorStop(0,   `rgba(255,240,190,${a*0.35})`);
   g.addColorStop(0.6, `rgba(255,200,120,${a*0.12})`);
   g.addColorStop(1,   'rgba(255,180,80,0)');
   ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(x, y, flashWave.r, 0, 6.283);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, flashWave.r, 0, 6.283); ctx.fill();
 
   ctx.globalCompositeOperation = 'source-over';
 }
@@ -1092,13 +1587,13 @@ function drawMotes(){
     const y = Math.round(m.y + Math.sin(time + m.x*0.01)*4);
     if(x < -5 || x > VW+5) continue;
     ctx.globalAlpha = m.a * (0.5 + 0.5*Math.sin(time*1.5 + m.x));
-    ctx.fillStyle = '#8fa4ff'; ctx.fillRect(x, y, m.s, m.s);
+    ctx.fillStyle = level === 2 ? '#ff9a5c' : '#8fa4ff';
+    ctx.fillRect(x, y, m.s, m.s);
   }
   ctx.globalAlpha = 1;
 }
 
 function drawDarkness(){
-  if(state === 'win') return;
   dctx.globalCompositeOperation = 'source-over';
   dctx.clearRect(0,0,VW,VH);
   dctx.fillStyle = 'rgba(2,3,9,0.965)'; dctx.fillRect(0,0,VW,VH);
@@ -1123,13 +1618,23 @@ function drawDarkness(){
     dctx.fillStyle = g;
     dctx.beginPath(); dctx.arc(x, y-3, 28, 0, 6.283); dctx.fill();
   }
-  {
+  if(ALTAR){
     const x = ALTAR.x + 17 - cam.x, y = ALTAR.y + 12;
     const g = dctx.createRadialGradient(x, y, 0, x, y, 45);
     g.addColorStop(0,'rgba(0,0,0,0.9)'); g.addColorStop(0.5,'rgba(0,0,0,0.35)');
     g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
     dctx.beginPath(); dctx.arc(x, y, 45, 0, 6.283); dctx.fill();
+  }
+  // Босс пробивает тьму своим светом
+  if(boss && !boss.dead){
+    const x = boss.x + boss.w/2 - cam.x, y = boss.y + boss.h/2;
+    const R2 = 90;
+    const g = dctx.createRadialGradient(x, y, 0, x, y, R2);
+    g.addColorStop(0,'rgba(0,0,0,0.6)'); g.addColorStop(0.7,'rgba(0,0,0,0.2)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle = g;
+    dctx.beginPath(); dctx.arc(x, y, R2, 0, 6.283); dctx.fill();
   }
   dctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(darkCv, 0, 0);
@@ -1147,7 +1652,11 @@ function drawDarkness(){
 }
 
 function drawHUD(){
-  if(state === 'title') return;
+  if(state === 'title' || state === 'story') return;
+  if(state === 'dead' || state === 'win'){
+    // Показываем шкалу на экранах смерти/победы тоже
+  }
+
   const w = 92, h = 7, x = 10, y = 10;
   ctx.fillStyle = 'rgba(6,8,18,0.75)'; ctx.fillRect(x-2, y-2, w+4, h+4);
   ctx.fillStyle = '#1b2138'; ctx.fillRect(x, y, w, h);
@@ -1159,14 +1668,14 @@ function drawHUD(){
   ctx.fillStyle = '#7f8bb0'; ctx.font = '8px "Courier New", monospace';
   ctx.fillText('СВЕТ', x, y + h + 11);
 
-  if(player.light < 25 && Math.floor(time*3) % 2 === 0){
+  if(player.light < 25 && Math.floor(time*3) % 2 === 0 && state === 'play'){
     ctx.fillStyle = '#ff8b9c';
     ctx.fillText('НАЙДИ СВЕТЯЩИЙСЯ ГРИБ', VW/2 - 62, 24);
   }
-  if(focus() && player.light > 15 && flashCooldown <= 0){
+  if(focus() && player.light > 15 && flashCooldown <= 0 && state === 'play'){
     ctx.fillStyle = '#ffe9a3';
     ctx.fillText('ВСПЫШКА ГОТОВА', VW - 96, 24);
-  } else if(flashCooldown > 0){
+  } else if(flashCooldown > 0 && state === 'play'){
     ctx.fillStyle = '#5a6a94';
     ctx.fillText('ПЕРЕЗАРЯДКА', VW - 82, 24);
   }
@@ -1195,8 +1704,152 @@ function drawHUD(){
   }
 }
 
+/* ---- Story art elements ---- */
+function drawStoryArt(art){
+  // Звёзды
+  if(art === 'stars' || art === 'sun'){
+    const count = art === 'sun' ? 5 : 40;
+    for(let i = 0; i < count; i++){
+      const sx = (i * 137) % VW;
+      const sy = (i * 71) % 120;
+      const b = 0.3 + 0.7 * Math.abs(Math.sin(time*0.5 + i));
+      ctx.fillStyle = `rgba(200,220,255,${b*0.7})`;
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+  }
+
+  // Солнце (для финала)
+  if(art === 'sun'){
+    const cx = VW/2, cy = 90;
+    const pulse = 0.7 + 0.3*Math.sin(time*1.5);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 70);
+    g.addColorStop(0, `rgba(255,240,180,${0.9*pulse})`);
+    g.addColorStop(0.3, `rgba(255,200,100,${0.6*pulse})`);
+    g.addColorStop(1, 'rgba(255,150,50,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, 70, 0, 6.283); ctx.fill();
+    ctx.fillStyle = '#fff3c4';
+    ctx.beginPath(); ctx.arc(cx, cy, 16, 0, 6.283); ctx.fill();
+  }
+
+  // Силуэт героя (тоже для финала и intro)
+  if(art === 'hero' || art === 'staff'){
+    const hx = VW/2 - 5, hy = VH - 60;
+    ctx.fillStyle = '#0a0a14';
+    ctx.fillRect(hx, hy, 10, 20);
+    ctx.fillRect(hx + 1, hy - 6, 8, 7);
+    ctx.fillStyle = '#2e2748';
+    ctx.fillRect(hx, hy + 4, 10, 12);
+    // посох
+    const sx = hx + 12;
+    ctx.fillStyle = '#7a5c34';
+    ctx.fillRect(sx, hy - 12, 2, 32);
+    const p2 = 0.6 + 0.4*Math.sin(time*3);
+    ctx.fillStyle = `rgba(255,235,170,${p2})`;
+    ctx.fillRect(sx-2, hy-16, 6, 6);
+  }
+
+  // Алтарь (для interlude / ending)
+  if(art === 'altar'){
+    const ax = VW/2 - 20, ay = VH - 110;
+    ctx.fillStyle = '#2a2440';
+    ctx.fillRect(ax-4, ay+60, 48, 8);
+    ctx.fillStyle = '#37304f';
+    ctx.fillRect(ax, ay, 8, 60);
+    ctx.fillRect(ax+32, ay, 8, 60);
+    ctx.fillStyle = '#4b4270';
+    ctx.fillRect(ax, ay, 2, 60);
+    ctx.fillRect(ax+32, ay, 2, 60);
+    ctx.fillStyle = '#37304f';
+    ctx.fillRect(ax, ay-6, 40, 6);
+    const pulse = 0.7 + 0.3*Math.sin(time*3);
+    const g = ctx.createRadialGradient(ax+20, ay+22, 0, ax+20, ay+22, 50);
+    g.addColorStop(0, `rgba(255,230,150,${0.5*pulse})`);
+    g.addColorStop(1, 'rgba(255,200,80,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(ax+20, ay+22, 50, 0, 6.283); ctx.fill();
+    ctx.fillStyle = '#ffe9a3';
+    ctx.fillRect(ax+16, ay+14, 8, 12);
+  }
+
+  // Пропасть (для сцен пустоты)
+  if(art === 'void'){
+    // Просто тёмный градиент уже есть
+  }
+}
+
+function drawStory(){
+  // Фон
+  ctx.fillStyle = '#02030a';
+  ctx.fillRect(0, 0, VW, VH);
+
+  const slides = STORY[storyPhase];
+  const cur = slides[storySlide];
+  if(!cur) return;
+
+  drawStoryArt(cur.art);
+
+  // Верхний и нижний тонкие бордюры текста
+  const textTop = VH - 100;
+  ctx.fillStyle = 'rgba(4,6,16,0.85)';
+  ctx.fillRect(0, textTop - 6, VW, 106);
+
+  ctx.strokeStyle = 'rgba(120,140,200,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(40, textTop - 6); ctx.lineTo(VW-40, textTop - 6);
+  ctx.moveTo(40, textTop + 94); ctx.lineTo(VW-40, textTop + 94);
+  ctx.stroke();
+
+  // Печатающийся текст
+  const text = cur.lines.join('\n');
+  const revealed = Math.floor(storyTimer / 0.035);
+  let idx = 0;
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillStyle = '#c9d4e8';
+  ctx.textAlign = 'center';
+
+  for(let li = 0; li < cur.lines.length; li++){
+    const line = cur.lines[li];
+    let shown = '';
+    for(let ci = 0; ci < line.length; ci++){
+      if(idx < revealed) shown += line[ci];
+      idx++;
+    }
+    ctx.fillText(shown, VW/2, textTop + 22 + li * 20);
+  }
+  ctx.textAlign = 'left';
+
+  // Индикатор продолжения
+  if(storyDone){
+    const a = 0.4 + 0.6*Math.abs(Math.sin(time*3));
+    ctx.fillStyle = `rgba(255,215,106,${a})`;
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('[ ПРОБЕЛ ]', VW/2, VH - 12);
+    ctx.textAlign = 'left';
+  }
+
+  // Номер слайда
+  ctx.fillStyle = 'rgba(120,140,200,0.35)';
+  ctx.font = '8px "Courier New", monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${storySlide + 1} / ${slides.length}`, VW - 12, VH - 8);
+  ctx.textAlign = 'left';
+}
+
 function drawTitle(){
   ctx.fillStyle = 'rgba(3,4,12,0.86)'; ctx.fillRect(0,0,VW,VH);
+
+  // Декоративные звёзды
+  for(let i = 0; i < 40; i++){
+    const sx = (i * 137) % VW;
+    const sy = (i * 71) % VH;
+    const b = 0.2 + 0.5*Math.abs(Math.sin(time*0.7 + i*0.9));
+    ctx.fillStyle = `rgba(160,180,255,${b*0.5})`;
+    ctx.fillRect(sx, sy, 1, 1);
+  }
+
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 20px "Courier New", monospace';
   ctx.fillText('ХРОНИКИ', VW/2, 70);
@@ -1229,36 +1882,38 @@ function drawDead(){
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
 }
 
-function drawWin(){
-  ctx.fillStyle = 'rgba(30,20,0,0.68)'; ctx.fillRect(0,0,VW,VH);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffe9a3'; ctx.font = 'bold 18px "Courier New", monospace';
-  ctx.fillText('ИСКРА ВОЗВРАЩЕНА', VW/2, 110);
-  ctx.fillStyle = '#c9d4e8'; ctx.font = '9px "Courier New", monospace';
-  ctx.fillText('Алтарь принял твой свет.', VW/2, 136);
-  ctx.fillText('Но это лишь начало пути...', VW/2, 152);
-  const a = 0.5 + 0.5*Math.sin(time*4);
-  ctx.globalAlpha = a;
-  ctx.fillStyle = '#ffd76a'; ctx.font = 'bold 10px "Courier New", monospace';
-  ctx.fillText('R — ИГРАТЬ СНОВА', VW/2, 196);
-  ctx.globalAlpha = 1; ctx.textAlign = 'left';
-}
-
 function render(){
+  // STORY
+  if(state === 'story'){
+    drawStory();
+    return;
+  }
+
   ctx.save();
   if(shake > 0.2){
     ctx.translate(Math.round(rand(-shake, shake)), Math.round(rand(-shake, shake)));
   }
   drawBackground(); drawPlatforms(); drawShrooms(); drawShards(); drawAltar();
-  drawEnemies(); drawMotes(); drawPlayer(); drawProjectiles();
+  drawEnemies(); drawMotes(); drawBoss(); drawPlayer(); drawProjectiles();
   drawParticles();
   drawFlashWave();
   drawDarkness(); drawHUD();
+  if(boss && !boss.dead && state === 'play') drawBossHP();
+  if(bossIntroT > 0){
+    ctx.globalAlpha = Math.min(1, bossIntroT);
+    ctx.fillStyle = 'rgba(40,0,0,0.55)';
+    ctx.fillRect(0, VH/2 - 24, VW, 48);
+    ctx.fillStyle = '#ff5c2a';
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ХРАНИТЕЛЬ ПЕПЛА ПРОБУДИЛСЯ', VW/2, VH/2 + 6);
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+  }
   ctx.restore();
 
   if(state === 'title') drawTitle();
   if(state === 'dead')  drawDead();
-  if(state === 'win')   drawWin();
 }
 
 /* ====================== ЦИКЛ ====================== */
@@ -1273,17 +1928,51 @@ function loop(now){
   acc += dt;
   let guard = 0;
   while(acc >= STEP && guard++ < 5){
-    if(state === 'title' && jumpBuffer > 0){
-      jumpBuffer = 0;
-      reset(); state = 'play'; SFX.init();
-    }
     update(STEP);
     acc -= STEP;
+  }
+  // Обновляем confirmBuffer для story/title вне STEP
+  if(state === 'title' && confirmBuffer > 0){
+    confirmBuffer = 0;
+    storyPhase = 'intro';
+    storySlide = 0; storyTimer = 0; storyDone = false;
+    state = 'story';
+    SFX.init();
+    SFX.storyNext();
+  }
+  if(state === 'story' && confirmBuffer > 0){
+    confirmBuffer = 0;
+    const slides = STORY[storyPhase];
+    const cur = slides[storySlide];
+    const totalChars = cur ? cur.lines.join('').length : 0;
+    if(!storyDone){
+      storyDone = true;
+      storyTimer = totalChars * 0.035 + 0.1;
+    } else {
+      storySlide++;
+      storyTimer = 0;
+      storyDone = false;
+      if(storySlide >= slides.length){
+        if(storyPhase === 'intro'){
+          loadLevel(1);
+          state = 'play';
+        } else if(storyPhase === 'interlude'){
+          loadLevel(2);
+          bossIntroT = 2.5;
+          state = 'play';
+          SFX.bossRoar();
+        } else if(storyPhase === 'ending'){
+          state = 'title';
+        }
+      } else {
+        SFX.storyNext();
+      }
+    }
   }
   render();
 }
 
-reset();
+loadLevel(1);
 requestAnimationFrame(loop);
 
 })();
