@@ -18,8 +18,8 @@
 
 /* =========================================================
    ХРОНИКИ ЗАБЫТОГО СВЕТА
-   Полный прототип: платформер-головоломка со светом,
-   процедурным звуком, реактивной чиптюн-музыкой и эхом.
+   Платформер-головоломка со светом, 4 типами врагов,
+   процедурным звуком, чиптюн-музыкой и эхом.
    ========================================================= */
 
 /* ====================== АУДИО-ДВИЖОК ====================== */
@@ -416,10 +416,19 @@ const shardSpawns = [
   {x:300,y:150},{x:760,y:150},{x:1220,y:200},{x:1660,y:150},
   {x:2020,y:190},{x:2250,y:110},{x:1340,y:100},
 ];
+
 const enemySpawns = [
-  {x:330,y:180},{x:560,y:195},{x:730,y:185},{x:900,y:160},{x:1120,y:180},
-  {x:1320,y:200},{x:1530,y:170},{x:1720,y:190},{x:1950,y:160},
-  {x:2120,y:185},{x:2300,y:170},
+  {x:330,  y:180, type:'crawler'},
+  {x:560,  y:195, type:'crawler'},
+  {x:730,  y:185, type:'hopper'},
+  {x:900,  y:160, type:'crawler'},
+  {x:1120, y:180, type:'sentinel'},
+  {x:1320, y:200, type:'hopper'},
+  {x:1530, y:170, type:'devourer'},
+  {x:1720, y:190, type:'crawler'},
+  {x:1950, y:160, type:'hopper'},
+  {x:2120, y:185, type:'sentinel'},
+  {x:2300, y:170, type:'devourer'},
 ];
 const ALTAR = {x:2500, y:186, w:34, h:44};
 
@@ -432,11 +441,14 @@ let shake = 0;
 const player = {
   x:40, y:180, w:10, h:14, vx:0, vy:0,
   onGround:false, jumps:0, face:1,
-  light:100, inv:0, dead:false
+  light:70, inv:0, dead:false
 };
 
 let enemies=[], shrooms=[], shards=[], particles=[], motes=[];
+let projectiles = [];
 let stepTimer = 0, stepSide = 0;
+let flashWave = null;
+let flashCooldown = 0;
 
 /* ====================== УТИЛИТЫ ====================== */
 const rand = (a,b) => a + Math.random()*(b-a);
@@ -453,18 +465,43 @@ function burst(x,y,color,n,spd=2){
   }
 }
 
+/* ====================== ФАБРИКА ВРАГОВ ====================== */
+function makeEnemy(spawn){
+  const base = {
+    x: spawn.x, y: spawn.y, type: spawn.type,
+    t: Math.random()*6.28, dead:false, flash:0
+  };
+  switch(spawn.type){
+    case 'crawler':
+      return { ...base, w:14, h:14, hp:2.0, maxHp:2.0,
+               dmgMult:1.0, hitDmg:2.2, speed:0.62, retreat:1.5 };
+    case 'hopper':
+      return { ...base, w:12, h:12, hp:1.6, maxHp:1.6,
+               dmgMult:1.0, hitDmg:2.6, speed:0.35, retreat:1.8,
+               jumpTimer: rand(0.4, 1.0), jumpVx:0, jumpVy:0 };
+    case 'devourer':
+      return { ...base, w:22, h:22, hp:5.5, maxHp:5.5,
+               dmgMult:2.0, hitDmg:1.5, speed:0.32, retreat:0.9 };
+    case 'sentinel':
+      return { ...base, w:14, h:20, hp:3.5, maxHp:3.5,
+               dmgMult:1.0, hitDmg:2.0, speed:0, retreat:0,
+               shootTimer: rand(0.8, 1.8) };
+    default:
+      return { ...base, w:14, h:14, hp:2.0, maxHp:2.0,
+               dmgMult:1.0, hitDmg:2.2, speed:0.62, retreat:1.5 };
+  }
+}
+
 /* ====================== ИНИЦИАЛИЗАЦИЯ ====================== */
 function reset(){
   player.x = 40; player.y = 180;
   player.vx = 0; player.vy = 0;
   player.onGround = false; player.jumps = 0;
-  player.light = 100; player.inv = 0; player.face = 1;
+  player.light = 70; player.inv = 0; player.face = 1;
   player.dead = false;
 
-  enemies = enemySpawns.map(s => ({
-    x:s.x, y:s.y, w:14, h:14, hp:2, t:Math.random()*6.28,
-    dead:false, flash:0
-  }));
+  enemies = enemySpawns.map(s => makeEnemy(s));
+  projectiles = [];
   shrooms = shroomSpawns.map(s => ({x:s.x, y:s.y, r:9, used:false, timer:0}));
   shards  = shardSpawns.map(s => ({x:s.x, y:s.y, taken:false, t:Math.random()*6.28}));
 
@@ -476,6 +513,7 @@ function reset(){
   }
   cam.x = 0; shake = 0;
   stepTimer = 0; stepSide = 0;
+  flashWave = null; flashCooldown = 0;
   SFX.setIntensity(0);
 }
 
@@ -501,15 +539,28 @@ function moveAndCollide(e){
 }
 
 function lightRadius(){
-  const base = 26 + player.light * 0.62;
+  const base = 14 + player.light * 0.34;
   const flick = 1 + Math.sin(time*9)*0.02 + Math.sin(time*23)*0.012;
-  return base * (focus() && player.light > 0 ? 1.75 : 1) * flick;
+  let mult = 1;
+  if(focus() && player.light > 0) mult = 1.5;
+  if(flashWave){
+    const t = flashWave.life / flashWave.maxLife;
+    mult += t * 1.8;
+  }
+  return base * mult * flick;
 }
 
 /* ====================== ОБНОВЛЕНИЕ ====================== */
 function update(dt){
   time += dt;
   if(mutedBannerT > 0) mutedBannerT -= dt;
+
+  if(flashCooldown > 0) flashCooldown -= dt;
+  if(flashWave){
+    flashWave.life -= dt;
+    flashWave.r = flashWave.maxR * (1 - flashWave.life / flashWave.maxLife);
+    if(flashWave.life <= 0) flashWave = null;
+  }
 
   for(const m of motes){
     m.x += m.vx; m.y += m.vy;
@@ -523,6 +574,15 @@ function update(dt){
     if(p.life <= 0) particles.splice(i,1);
   }
 
+  /* === R — рестарт из любого состояния === */
+  restartBuffer -= dt;
+  if(restartBuffer > 0){
+    restartBuffer = 0;
+    reset();
+    state = 'play';
+    return;
+  }
+
   if(state !== 'play') return;
 
   /* --- управление --- */
@@ -533,7 +593,38 @@ function update(dt){
   player.vx = clamp(player.vx, -speed, speed);
 
   const focusing = focus() && player.light > 0;
-  if(focusing && !prevFocus) SFX.flash();
+
+  /* === ВЗРЫВ СВЕТА === */
+  if(focusing && !prevFocus && flashCooldown <= 0 && player.light > 15){
+    SFX.flash();
+    shake = Math.max(shake, 5);
+    flashCooldown = 0.55;
+
+    const cx = player.x + player.w/2;
+    const cy = player.y + player.h/2;
+    flashWave = { x:cx, y:cy, r:20, maxR:180, life:0.55, maxLife:0.55 };
+
+    player.light = Math.max(0, player.light - 18);
+
+    for(const e of enemies){
+      if(e.dead) continue;
+      const dx = (e.x + e.w/2) - cx;
+      const dy = (e.y + e.h/2) - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      if(d < 180){
+        const power = 1 - d/180;
+        e.hp -= 1.5 + 3.5 * power;
+        e.flash = 1;
+        e.x += (dx/d) * (3 + 5*power);
+        e.y += (dy/d) * (3 + 5*power);
+        if(e.hp <= 0){
+          e.dead = true;
+          burst(e.x+e.w/2, e.y+e.h/2, '#8ea2ff', 14, 2.4);
+          player.light = Math.min(100, player.light + 4);
+        }
+      }
+    }
+  }
   prevFocus = focusing;
 
   jumpBuffer -= dt;
@@ -577,7 +668,7 @@ function update(dt){
   }
 
   /* --- свет --- */
-  const drain = (focusing ? 5.2 : 1.3) * dt;
+  const drain = (focusing ? 8.0 : 2.6) * dt;
   player.light = Math.max(0, player.light - drain);
 
   if(player.light <= 0){ die('Свет угас...'); return; }
@@ -592,7 +683,7 @@ function update(dt){
     }
     if(overlap(player, {x:s.x-s.r, y:s.y-s.r, w:s.r*2, h:s.r*2})){
       s.used = true; s.timer = 14;
-      player.light = Math.min(100, player.light + 42);
+      player.light = Math.min(100, player.light + 55);
       burst(s.x, s.y, '#7ff0d8', 14, 2.2);
       shake = Math.max(shake, 2);
       SFX.shroom();
@@ -624,32 +715,125 @@ function update(dt){
     if(dist < nearestDist) nearestDist = dist;
 
     const lit = dist < R;
-    if(lit){
-      e.hp -= 1.4 * dt;
-      e.flash = 1;
-      SFX.hitEnemy();
-      e.x -= (dx/dist) * 1.5;
-      e.y -= (dy/dist) * 1.5;
+
+    if(e.type === 'hopper'){
+      if(lit){
+        e.hp -= e.hitDmg * dt;
+        e.flash = 1;
+        SFX.hitEnemy();
+        e.x -= (dx/dist) * e.retreat;
+        e.y -= (dy/dist) * e.retreat;
+        e.jumpVx *= 0.8; e.jumpVy *= 0.8;
+      } else {
+        e.flash = Math.max(0, e.flash - dt*2);
+        e.jumpTimer -= dt;
+        if(e.jumpTimer <= 0){
+          e.jumpTimer = rand(0.9, 1.4);
+          e.jumpVx = (dx/dist) * 3.2;
+          e.jumpVy = (dy/dist) * 3.2 - 2.2;
+          burst(ex, ey, '#7c5cff', 5, 1.2);
+        }
+        e.x += e.jumpVx * dt * 30;
+        e.y += e.jumpVy * dt * 30;
+        e.jumpVx *= Math.pow(0.92, dt*60);
+        e.jumpVy += 6 * dt;
+      }
       if(e.hp <= 0){
         e.dead = true;
-        burst(ex, ey, '#8ea2ff', 14, 2.4);
+        burst(ex, ey, '#c08cff', 12, 2.2);
         player.light = Math.min(100, player.light + 4);
         SFX.killEnemy();
       }
-    } else {
-      e.flash = Math.max(0, e.flash - dt*2);
-      e.x += (dx/dist) * 0.62;
-      e.y += (dy/dist) * 0.62;
+    }
+    else if(e.type === 'sentinel'){
+      if(lit){
+        e.hp -= e.hitDmg * dt;
+        e.flash = 1;
+        SFX.hitEnemy();
+      } else {
+        e.flash = Math.max(0, e.flash - dt*2);
+        e.shootTimer -= dt;
+        if(e.shootTimer <= 0 && dist < 220){
+          e.shootTimer = 1.8;
+          projectiles.push({
+            x: ex, y: ey,
+            vx: (dx/dist) * 1.6,
+            vy: (dy/dist) * 1.6,
+            life: 3.0
+          });
+          burst(ex, ey, '#ff8c5a', 4, 1.2);
+        }
+      }
+      if(e.hp <= 0){
+        e.dead = true;
+        burst(ex, ey, '#ff9a5c', 16, 2.6);
+        player.light = Math.min(100, player.light + 6);
+        SFX.killEnemy();
+      }
+    }
+    else {
+      // crawler + devourer
+      if(lit){
+        e.hp -= e.hitDmg * dt;
+        e.flash = 1;
+        SFX.hitEnemy();
+        e.x -= (dx/dist) * e.retreat;
+        e.y -= (dy/dist) * e.retreat;
+        if(e.hp <= 0){
+          e.dead = true;
+          burst(ex, ey, e.type === 'devourer' ? '#7c5cff' : '#8ea2ff',
+                e.type === 'devourer' ? 20 : 14, 2.4);
+          player.light = Math.min(100, player.light + (e.type === 'devourer' ? 8 : 4));
+          SFX.killEnemy();
+        }
+      } else {
+        e.flash = Math.max(0, e.flash - dt*2);
+        e.x += (dx/dist) * e.speed;
+        e.y += (dy/dist) * e.speed;
+      }
     }
 
     if(player.inv <= 0 && overlap(player, e)){
-      player.light = Math.max(0, player.light - 11);
+      const lightLoss = 11 * e.dmgMult;
+      player.light = Math.max(0, player.light - lightLoss);
       player.inv = 1.1;
       const k = px < ex ? -1 : 1;
       player.vx = k * 4.2; player.vy = -3.6;
-      shake = 5;
-      burst(px, py, '#ff6b8a', 10, 2);
+      shake = Math.max(shake, 5);
+      burst(px, py, e.dmgMult > 1 ? '#ff4d7a' : '#ff6b8a', 10, 2);
       SFX.hurt();
+    }
+  }
+
+  /* --- снаряды стражей --- */
+  for(let i = projectiles.length - 1; i >= 0; i--){
+    const p = projectiles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= dt;
+
+    let hitWall = false;
+    for(const pl of platforms){
+      if(p.x > pl.x && p.x < pl.x+pl.w && p.y > pl.y && p.y < pl.y+pl.h){
+        hitWall = true; break;
+      }
+    }
+
+    if(!hitWall && player.inv <= 0 &&
+       p.x > player.x && p.x < player.x+player.w &&
+       p.y > player.y && p.y < player.y+player.h){
+      player.light = Math.max(0, player.light - 8);
+      player.inv = 1.1;
+      burst(p.x, p.y, '#ff5c8a', 8, 1.8);
+      SFX.hurt();
+      shake = Math.max(shake, 4);
+      projectiles.splice(i, 1);
+      continue;
+    }
+
+    if(p.life <= 0 || hitWall){
+      burst(p.x, p.y, '#8f6aff', 4, 1.0);
+      projectiles.splice(i, 1);
     }
   }
 
@@ -670,9 +854,6 @@ function update(dt){
   const targetX = clamp(player.x + player.w/2 - VW/2, 0, LEVEL_W - VW);
   cam.x += (targetX - cam.x) * 0.12;
   if(shake > 0) shake = Math.max(0, shake - dt*18);
-
-  restartBuffer -= dt;
-  if(restartBuffer > 0){ reset(); state = 'play'; restartBuffer = 0; }
 }
 
 function die(msg){
@@ -764,18 +945,64 @@ function drawAltar(){
 function drawEnemies(){
   for(const e of enemies){
     if(e.dead) continue;
-    const bob = Math.sin(e.t)*2;
+    const bob = e.type === 'hopper' ? 0 : Math.sin(e.t)*2;
     const x = Math.round(e.x - cam.x), y = Math.round(e.y + bob);
-    if(x < -40 || x > VW+40) continue;
-    const c = e.flash > 0 ? '#3a3f78' : '#0e0e1a';
-    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x+7, y+7, 7, 0, 6.283); ctx.fill();
-    ctx.fillStyle = c;
-    ctx.fillRect(x+1, y+9, 12, 5); ctx.fillRect(x-1, y+7, 3, 4); ctx.fillRect(x+12, y+8, 3, 4);
-    ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#ff4d6d';
-    ctx.fillRect(x+3, y+5, 2, 2); ctx.fillRect(x+9, y+5, 2, 2);
+    if(x < -50 || x > VW+50) continue;
+
+    if(e.type === 'crawler'){
+      const c = e.flash > 0 ? '#3a3f78' : '#0e0e1a';
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(x+7, y+7, 7, 0, 6.283); ctx.fill();
+      ctx.fillRect(x+1, y+9, 12, 5);
+      ctx.fillRect(x-1, y+7, 3, 4);
+      ctx.fillRect(x+12, y+8, 3, 4);
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#ff4d6d';
+      ctx.fillRect(x+3, y+5, 2, 2);
+      ctx.fillRect(x+9, y+5, 2, 2);
+    }
+    else if(e.type === 'hopper'){
+      const c = e.flash > 0 ? '#7c6aff' : '#1a0f2e';
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(x+6, y+6, 6, 0, 6.283); ctx.fill();
+      ctx.fillRect(x+1, y-2, 3, 4);
+      ctx.fillRect(x+8, y-2, 3, 4);
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#c08cff';
+      ctx.fillRect(x+2, y+4, 2, 2);
+      ctx.fillRect(x+8, y+4, 2, 2);
+    }
+    else if(e.type === 'devourer'){
+      const c = e.flash > 0 ? '#5c4aaa' : '#0a0a18';
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(x+11, y+11, 11, 0, 6.283); ctx.fill();
+      ctx.fillRect(x-2, y+14, 26, 8);
+      ctx.fillRect(x+1, y+20, 4, 5);
+      ctx.fillRect(x+17, y+20, 4, 5);
+      ctx.fillRect(x+7, y+22, 4, 4);
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : '#b060ff';
+      ctx.fillRect(x+4, y+8, 3, 3);
+      ctx.fillRect(x+15, y+8, 3, 3);
+      ctx.fillRect(x+9, y+13, 3, 3);
+      ctx.fillStyle = `rgba(120,80,200,${0.10 + 0.05*Math.sin(e.t*3)})`;
+      ctx.beginPath(); ctx.arc(x+11, y+11, 18, 0, 6.283); ctx.fill();
+    }
+    else if(e.type === 'sentinel'){
+      const c = e.flash > 0 ? '#ff8060' : '#1a0f0a';
+      ctx.fillStyle = c;
+      ctx.fillRect(x+3, y, 8, 20);
+      ctx.fillRect(x+2, y+2, 10, 4);
+      ctx.fillRect(x+2, y+16, 10, 4);
+      const glow = e.shootTimer < 0.4 ? '#ffdd66' : '#ff5c2a';
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : glow;
+      ctx.fillRect(x+5, y+8, 4, 4);
+      ctx.fillStyle = 'rgba(255,100,60,0.25)';
+      ctx.fillRect(x+3, y+6, 8, 8);
+    }
+
     if(e.flash > 0){
-      ctx.fillStyle = `rgba(160,180,255,${e.flash*0.5})`;
-      ctx.beginPath(); ctx.arc(x+7, y+7, 11, 0, 6.283); ctx.fill();
+      ctx.fillStyle = `rgba(160,180,255,${e.flash*0.35})`;
+      ctx.beginPath();
+      ctx.arc(x + e.w/2, y + e.h/2, e.w, 0, 6.283);
+      ctx.fill();
     }
   }
 }
@@ -803,6 +1030,51 @@ function drawPlayer(){
   ctx.fillStyle = '#ffe9a3'; ctx.fillRect(sx-1, y-9, 4, 4);
   ctx.fillStyle = `rgba(255,235,170,${0.55*p2})`;
   ctx.fillRect(sx-3, y-11, 8, 8);
+}
+
+function drawProjectiles(){
+  for(const p of projectiles){
+    const x = Math.round(p.x - cam.x), y = Math.round(p.y);
+    if(x < -20 || x > VW+20) continue;
+    ctx.fillStyle = 'rgba(150,110,255,0.35)';
+    ctx.fillRect(x-4, y-4, 8, 8);
+    ctx.fillStyle = '#c8a4ff';
+    ctx.fillRect(x-2, y-2, 4, 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x-1, y-1, 2, 2);
+  }
+}
+
+function drawFlashWave(){
+  if(!flashWave) return;
+  const x = flashWave.x - cam.x;
+  const y = flashWave.y;
+  const a = flashWave.life / flashWave.maxLife;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  ctx.strokeStyle = `rgba(255,230,160,${a*0.9})`;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(x, y, flashWave.r, 0, 6.283);
+  ctx.stroke();
+
+  ctx.strokeStyle = `rgba(170,200,255,${a*0.55})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(x, y, flashWave.r * 0.72, 0, 6.283);
+  ctx.stroke();
+
+  const g = ctx.createRadialGradient(x, y, 0, x, y, flashWave.r);
+  g.addColorStop(0,   `rgba(255,240,190,${a*0.35})`);
+  g.addColorStop(0.6, `rgba(255,200,120,${a*0.12})`);
+  g.addColorStop(1,   'rgba(255,180,80,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, flashWave.r, 0, 6.283);
+  ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 function drawParticles(){
@@ -845,19 +1117,19 @@ function drawDarkness(){
     if(s.used) continue;
     const x = s.x - cam.x, y = s.y;
     if(x < -60 || x > VW+60) continue;
-    const g = dctx.createRadialGradient(x, y-3, 0, x, y-3, 42);
+    const g = dctx.createRadialGradient(x, y-3, 0, x, y-3, 28);
     g.addColorStop(0,'rgba(0,0,0,0.85)'); g.addColorStop(0.6,'rgba(0,0,0,0.30)');
     g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
-    dctx.beginPath(); dctx.arc(x, y-3, 42, 0, 6.283); dctx.fill();
+    dctx.beginPath(); dctx.arc(x, y-3, 28, 0, 6.283); dctx.fill();
   }
   {
     const x = ALTAR.x + 17 - cam.x, y = ALTAR.y + 12;
-    const g = dctx.createRadialGradient(x, y, 0, x, y, 70);
+    const g = dctx.createRadialGradient(x, y, 0, x, y, 45);
     g.addColorStop(0,'rgba(0,0,0,0.9)'); g.addColorStop(0.5,'rgba(0,0,0,0.35)');
     g.addColorStop(1,'rgba(0,0,0,0)');
     dctx.fillStyle = g;
-    dctx.beginPath(); dctx.arc(x, y, 70, 0, 6.283); dctx.fill();
+    dctx.beginPath(); dctx.arc(x, y, 45, 0, 6.283); dctx.fill();
   }
   dctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(darkCv, 0, 0);
@@ -887,12 +1159,16 @@ function drawHUD(){
   ctx.fillStyle = '#7f8bb0'; ctx.font = '8px "Courier New", monospace';
   ctx.fillText('СВЕТ', x, y + h + 11);
 
-  if(player.light < 30 && Math.floor(time*3) % 2 === 0){
+  if(player.light < 25 && Math.floor(time*3) % 2 === 0){
     ctx.fillStyle = '#ff8b9c';
     ctx.fillText('НАЙДИ СВЕТЯЩИЙСЯ ГРИБ', VW/2 - 62, 24);
   }
-  if(focus() && player.light > 0){
-    ctx.fillStyle = '#ffe9a3'; ctx.fillText('ВСПЫШКА', VW - 62, 24);
+  if(focus() && player.light > 15 && flashCooldown <= 0){
+    ctx.fillStyle = '#ffe9a3';
+    ctx.fillText('ВСПЫШКА ГОТОВА', VW - 96, 24);
+  } else if(flashCooldown > 0){
+    ctx.fillStyle = '#5a6a94';
+    ctx.fillText('ПЕРЕЗАРЯДКА', VW - 82, 24);
   }
 
   const ix = 10, iy = 32, iw = 60, ih = 4;
@@ -930,7 +1206,7 @@ function drawTitle(){
   ctx.fillStyle = '#8fa0c8';
   ctx.fillText('A / D  или  ← →   — движение', VW/2, 158);
   ctx.fillText('W / ↑ / ПРОБЕЛ    — прыжок (двойной)', VW/2, 174);
-  ctx.fillText('SHIFT             — вспышка (жжёт свет)', VW/2, 190);
+  ctx.fillText('SHIFT             — ВЗРЫВ СВЕТА', VW/2, 190);
   ctx.fillText('R — заново        M — звук', VW/2, 206);
   const a = 0.5 + 0.5*Math.sin(time*3);
   ctx.globalAlpha = a;
@@ -974,7 +1250,10 @@ function render(){
     ctx.translate(Math.round(rand(-shake, shake)), Math.round(rand(-shake, shake)));
   }
   drawBackground(); drawPlatforms(); drawShrooms(); drawShards(); drawAltar();
-  drawEnemies(); drawMotes(); drawPlayer(); drawParticles(); drawDarkness(); drawHUD();
+  drawEnemies(); drawMotes(); drawPlayer(); drawProjectiles();
+  drawParticles();
+  drawFlashWave();
+  drawDarkness(); drawHUD();
   ctx.restore();
 
   if(state === 'title') drawTitle();
