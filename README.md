@@ -655,7 +655,8 @@ function makeEnemy(sp){
 }
 function makeBoss(sp){
   const base={x:sp.x,y:sp.y,phase:1,state:'idle',stateT:0,idleDur:1.4,
-    flash:0,vx:0,vy:0,dead:false,facing:-1,hitFlash:0,flashDone:false,type:sp.type,frozen:0};
+    flash:0,vx:0,vy:0,dead:false,facing:-1,hitFlash:0,flashDone:false,type:sp.type,frozen:0,
+    attackCount:0}; // ИСПРАВЛЕНО: добавлена инициализация
   if(sp.type==='smith'){
     return{...base,w:48,h:56,hp:45,maxHp:45,idleDur:1.0};
   }
@@ -700,7 +701,7 @@ function loadLevel(n){
   flashWave=null;flashCooldown=0;paused=false;hitFlash=0;
   silhouette=null;whisperT=0;windTimer=6;windActive=0;windDir=1;
   deathsThisLevel=0;damagedThisLevel=false;flashesThisLevel=0;
-  // Сброс буферов, чтобы игрок не прыгнул автоматически при старте уровня
+  runTime=0; // ИСПРАВЛЕНО: сброс таймера при загрузке уровня для корректной работы достижения "Скороход"
   jBuf=0;rBuf=0;cBuf=0;pBuf=0;prevF=false;staffBuffer=0;
   SFX.setIntensity(0);
 }
@@ -720,10 +721,39 @@ function moveAndCollide(e){
       }
     }
   }
-  for(const p of platforms){if(overlap(e,p)){
-    if(e.vx>0)e.x=p.x-e.w;else if(e.vx<0)e.x=p.x+p.w;e.vx=0;}}
-  for(const ip of icePlatforms){if(overlap(e,ip)){
-    if(e.vx>0)e.x=ip.x-e.w;else if(e.vx<0)e.x=ip.x+ip.w;e.vx=0;}}
+  
+  // ИСПРАВЛЕНО: надежное разрешение коллизий по оси X, предотвращающее застревание при vx === 0
+  for(const p of platforms){
+    if(overlap(e,p)){
+      if(e.vx > 0) {
+        e.x = p.x - e.w;
+      } else if(e.vx < 0) {
+        e.x = p.x + p.w;
+      } else {
+        const overlapLeft = (e.x + e.w) - p.x;
+        const overlapRight = (p.x + p.w) - e.x;
+        if(overlapLeft < overlapRight) e.x = p.x - e.w;
+        else e.x = p.x + p.w;
+      }
+      e.vx = 0;
+    }
+  }
+  for(const ip of icePlatforms){
+    if(overlap(e,ip)){
+      if(e.vx > 0) {
+        e.x = ip.x - e.w;
+      } else if(e.vx < 0) {
+        e.x = ip.x + ip.w;
+      } else {
+        const overlapLeft = (e.x + e.w) - ip.x;
+        const overlapRight = (ip.x + ip.w) - e.x;
+        if(overlapLeft < overlapRight) e.x = ip.x - e.w;
+        else e.x = ip.x + ip.w;
+      }
+      e.vx = 0;
+    }
+  }
+
   e.y+=e.vy;e.onGround=false;
   for(const p of platforms){if(overlap(e,p)){
     if(e.vy>0){e.y=p.y-e.h;e.onGround=true;}
@@ -732,6 +762,7 @@ function moveAndCollide(e){
     if(e.vy>0){e.y=ip.y-e.h;e.onGround=true;}
     else if(e.vy<0){e.y=ip.y+ip.h;}e.vy=0;}}
 }
+
 function lightRadius(){
   const base=14+player.light*0.34;
   const flick=1+Math.sin(time*9)*0.02+Math.sin(time*23)*0.012;
@@ -802,12 +833,10 @@ function updateBoss(dt){
   const px=player.x+player.w/2,py=player.y+player.h/2;
   const d=Math.hypot(px-cx,py-cy)||1;
   const R=lightRadius();
-  // Урон от света посоха
   if(d<R*1.15){
     boss.hp-=3.0*dt;boss.flash=1;
     if(Math.random()<0.15)SFX.hitEnemy();
   }
-  // Урон от вспышки — однократно
   if(flashWave&&!boss.flashDone&&flashWave.life>flashWave.maxLife-0.1){
     const fd=Math.hypot(cx-flashWave.x,cy-flashWave.y);
     if(fd<180){
@@ -1036,7 +1065,6 @@ function update(dt){
     }
   }
 
-  // === ВСПЫШКА ===
   if(focusing&&!prevF&&flashCooldown<=0&&player.light>15){
     flashCooldown=0.55;flashesThisLevel++;
     const cx=player.x+player.w/2,cy=player.y+player.h/2;
@@ -1139,7 +1167,6 @@ function update(dt){
       stepTimer=0.34-Math.abs(player.vx)*0.04;}}
   else stepTimer=0;
 
-  // === СВЕТ ===
   let drainMult=1;
   if(difficulty==='easy')drainMult=0.7;
   else if(difficulty==='hard')drainMult=1.4;
@@ -1457,7 +1484,11 @@ function update(dt){
 }
 
 function showDiary(d){
+  // ИСПРАВЛЕНО: удаление предыдущих дневников для предотвращения наложения текста
+  document.querySelectorAll('.diary-popup').forEach(el => el.remove());
+  
   const el=document.createElement('div');
+  el.className = 'diary-popup'; // ИСПРАВЛЕНО: добавлен класс для селектора выше
   el.style.cssText=`position:fixed;bottom:140px;left:50%;transform:translateX(-50%);
     background:rgba(4,6,16,0.95);color:#ffd76a;padding:12px 18px;
     border:2px solid rgba(255,215,106,0.6);border-radius:6px;
@@ -1467,6 +1498,7 @@ function showDiary(d){
   document.body.appendChild(el);
   setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),500);},5000);
 }
+
 function goToInterlude2(){
   storyPhase='interlude2';storySlide=0;storyTimer=0;storyDone=false;state='story';
   if(deaths===0&&!skins.includes('gold'))skins.push('gold');
