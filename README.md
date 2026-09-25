@@ -2,6 +2,8 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<!-- === YANDEX GAMES SDK: Подключение скрипта === -->
+<script src="https://yandex.ru/games/sdk/v2"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#03040a">
@@ -54,6 +56,81 @@
 <script>
 (()=>{
 "use strict";
+
+/* ==================== YANDEX GAMES SDK ==================== */
+let ysdk = null;
+let yPlayer = null;
+
+// Инициализация SDK
+function initYandexSDK() {
+  if (typeof YaGames !== 'undefined') {
+    YaGames.init().then(ysdkInstance => {
+      ysdk = ysdkInstance;
+      console.log('Yandex SDK initialized');
+      
+      // Пытаемся получить объект игрока для облачных сохранений
+      ysdk.getPlayer().then(_player => {
+        yPlayer = _player;
+        loadCloudSave();
+      }).catch(err => {
+        console.log('Игрок не авторизован, используются локальные сохранения');
+      });
+    }).catch(err => {
+      console.error('Ошибка инициализации Yandex SDK:', err);
+    });
+  }
+}
+
+// Показ полноэкранной рекламы
+function showFullscreenAd() {
+  if (ysdk) {
+    ysdk.adv.showFullscreenAdv({
+      callbacks: {
+        onClose: function(wasShown) {
+          console.log('Реклама закрыта');
+        },
+        onError: function(error) {
+          console.error('Ошибка рекламы:', error);
+        }
+      }
+    });
+  }
+}
+
+// Сохранение в облако
+function saveToCloud(data) {
+  if (yPlayer) {
+    yPlayer.setData({ gameData: JSON.stringify(data) }).then(() => {
+      console.log('Данные сохранены в облако');
+    }).catch(err => {
+      console.error('Ошибка облачного сохранения:', err);
+    });
+  }
+}
+
+// Загрузка из облака
+function loadCloudSave() {
+  if (yPlayer) {
+    yPlayer.getData(['gameData']).then(data => {
+      if (data.gameData) {
+        try {
+          // Перезаписываем локальное хранилище данными из облака
+          localStorage.setItem('fl_save2', data.gameData);
+          // Повторно загружаем игру, чтобы применить новые данные
+          loadGame();
+          console.log('Облачное сохранение загружено');
+        } catch (e) {
+          console.error('Ошибка парсинга облачного сохранения', e);
+        }
+      }
+    }).catch(err => {
+      console.error('Не удалось получить данные из облака', err);
+    });
+  }
+}
+
+// Запускаем инициализацию сразу
+initYandexSDK();
 
 /* ==================== SFX ==================== */
 const SFX=(()=>{
@@ -293,9 +370,8 @@ const keys={};
 let jBuf=0,rBuf=0,cBuf=0,pBuf=0,paused=false;
 let mUB=0,mDB=0,mLB=0,mRB=0,mBB=0;
 let prevF=false,mBannerT=0,staffBuffer=0;
-let focusHoldTime=0; // Для заряженной вспышки
+let focusHoldTime=0;
 
-// Маппинг действий
 const act=k=>{
   if(k===keyMap.left||k==='ArrowLeft')return'left';
   if(k===keyMap.right||k==='ArrowRight')return'right';
@@ -622,7 +698,7 @@ let bestTimes={},diariesFound=[],achievements=[],skins=['default'],
   currentSkin='default',difficulty='normal';
 let staffType='fire';
 let windTimer=0,windActive=0,windDir=1;
-let currency=0; // Осколки как валюта
+let currency=0;
 let upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};
 let ngPlus=false,ngPlusComplete=false;
 let idleTimer=0,compassTarget=null;
@@ -664,13 +740,21 @@ function unlockAch(id){
 
 /* ==================== СОХРАНЕНИЕ ==================== */
 function saveGame(){
-  try{localStorage.setItem('fl_save2',JSON.stringify({
+  const saveData = {
     level,deaths,bestTimes,diariesFound,achievements,skins,currentSkin,difficulty,secretsFound,
     currency,upgrades,ngPlus,ngPlusComplete,stalkerKills,wallsBroken
-  }));}catch(e){}
+  };
+  try{
+    const jsonString = JSON.stringify(saveData);
+    localStorage.setItem('fl_save2', jsonString);
+    // === YANDEX GAMES SDK: Сохранение в облако ===
+    saveToCloud(saveData);
+  }catch(e){}
 }
+
 function loadGame(){
-  try{const s=JSON.parse(localStorage.getItem('fl_save2')||'{}');
+  try{
+    const s=JSON.parse(localStorage.getItem('fl_save2')||'{}');
     if(s.level)level=s.level;if(s.deaths)deaths=s.deaths;
     if(s.bestTimes)bestTimes=s.bestTimes;if(s.diariesFound)diariesFound=s.diariesFound;
     if(s.achievements)achievements=s.achievements;if(s.skins)skins=s.skins;
@@ -683,6 +767,7 @@ function loadGame(){
     if(s.wallsBroken)wallsBroken=s.wallsBroken;
   }catch(e){}
 }
+// Первичная загрузка (будет перезаписана облачной, если она есть)
 loadGame();
 
 /* ==================== ФАБРИКИ ==================== */
@@ -734,7 +819,6 @@ function loadLevel(n){
   levelTheme=L.theme||'default';
   platforms=L.platforms.slice();ALTAR=L.altar;EXIT=L.exit||null;
   
-  // Применяем апгрейды
   player.maxLight=100+upgrades.light_max*20;
   player.x=L.spawn.x;player.y=L.spawn.y;
   player.vx=0;player.vy=0;player.onGround=false;player.jumps=0;
@@ -1145,7 +1229,6 @@ function update(dt){
   player.vx=clamp(player.vx,-speed*1.3,speed*1.3);
   const focusing=foc()&&player.light>0;
 
-  // Заряд вспышки
   if(focusing&&player.dashing<=0){
     focusHoldTime+=dt;
     if(focusHoldTime>0.6&&focusHoldTime-dt<=0.6)SFX.chargeUp();
@@ -1153,7 +1236,6 @@ function update(dt){
     focusHoldTime=0;
   }
 
-  // Рывок
   if(focusing&&!prevF&&player.dashCd<=0&&player.light>=15&&player.dashing<=0&&focusHoldTime<0.3){
     const dashCdBase=0.8*(1-upgrades.dash_cd*0.2);
     player.dashCd=dashCdBase;player.dashing=0.15;player.inv=0.2;
@@ -1177,7 +1259,6 @@ function update(dt){
     }
   }
 
-  // === ВСПЫШКА (обычная и заряженная) ===
   if(!focusing&&prevF&&flashCooldown<=0&&player.dashing<=0){
     const charged=focusHoldTime>=0.6;
     const rad=charged?260:180;
@@ -1192,7 +1273,6 @@ function update(dt){
       if(charged){
         SFX.chargedFlash();shake=Math.max(shake,4);
         player.light=Math.max(0,player.light-cost);
-        // Разрушение стен
         for(const b of breakables){
           if(b.broken)continue;
           const bd=Math.hypot((b.x+b.w/2)-cx,(b.y+b.h/2)-cy);
@@ -1210,7 +1290,6 @@ function update(dt){
         player.light=Math.max(0,player.light-(staffType==='ice'?22:cost));
       }
       
-      // Урон врагам
       for(const e of enemies){if(e.dead)continue;
         const dx=(e.x+e.w/2)-cx,dy=(e.y+e.h/2)-cy,d=Math.hypot(dx,dy)||1;
         if(d<rad){
@@ -1235,7 +1314,6 @@ function update(dt){
         }
       }
       
-      // Цепная молния
       if(staffType==='lightning'){
         const hit=[];
         for(const e of enemies){if(e.dead)continue;
@@ -1258,7 +1336,6 @@ function update(dt){
         }
       }
       
-      // Ледяные платформы
       if(staffType==='ice'){
         for(let i=0;i<(charged?3:2);i++){
           icePlatforms.push({x:cx+player.face*(30+i*35)-20,y:cy+10,w:34,h:8,life:charged?6:4.5});
@@ -1270,7 +1347,6 @@ function update(dt){
   }
   prevF=focusing;
 
-  // Wall Slide
   player.wallSlide=false;
   if(!player.onGround&&player.vy>0&&player.dashing<=0){
     for(const p of platforms){
@@ -1303,7 +1379,6 @@ function update(dt){
   if(player.onGround)player.jumps=0;
   if(player.inv>0&&player.dashing<=0)player.inv-=dt;
 
-  // Следы на снегу
   if(levelSurface==='ice'&&player.onGround&&Math.abs(player.vx)>0.3){
     if(Math.random()<0.3)snowTracks.push({x:player.x+5,y:player.y+14,life:3});
   }
@@ -1328,11 +1403,9 @@ function update(dt){
       stepTimer=0.34-Math.abs(player.vx)*0.04;}}
   else stepTimer=0;
 
-  // Компас заблудшего
   if(walking||Math.abs(player.vx)>0.1)idleTimer=0;
   else idleTimer+=dt;
   if(idleTimer>30&&!compassTarget){
-    // Найти ближайший гриб, фонарь или выход
     let best=null,bestD=9999;
     const px=player.x+5,py=player.y+7;
     for(const s of shrooms){if(s.used)continue;const d=Math.hypot(s.x-px,s.y-py);if(d<bestD){bestD=d;best={x:s.x,y:s.y};}}
@@ -1343,7 +1416,6 @@ function update(dt){
   }
   if(compassTarget&&Math.hypot(compassTarget.x-player.x-5,compassTarget.y-player.y-7)<40)compassTarget=null;
 
-  // Сердцебиение при низком свете
   if(player.light<25&&state==='play'){
     heartTimer-=dt;
     if(heartTimer<=0){
@@ -1361,7 +1433,6 @@ function update(dt){
   if(levelTheme==='water')drainMult*=1.5;
   if(player.bubble>0){drainMult=0;player.bubble-=dt;}
   
-  // Аура пиявок
   for(const e of enemies){
     if(e.dead||e.type!=='leech')continue;
     const d=Math.hypot(player.x+5-e.x-8,player.y+7-e.y-8);
@@ -1405,7 +1476,7 @@ function update(dt){
     if(sh.taken)continue;
     if(overlap(player,{x:sh.x-5,y:sh.y-5,w:10,h:10})){
       sh.taken=true;player.light=Math.min(player.maxLight,player.light+12);
-      currency++; // Осколки = валюта
+      currency++;
       burst(sh.x,sh.y,'#ffd76a',9,1.8);SFX.shard();saveGame();}
   }
   for(const l of lanterns){
@@ -1506,7 +1577,6 @@ function update(dt){
         if(e.hp<=0){e.dead=true;stalkerKills++;if(stalkerKills>=10)unlockAch('shadow_dancer');
           burst(ex,ey,'#6a4a8a',14,2.4);player.light=Math.min(player.maxLight,player.light+5);SFX.killEnemy();saveGame();}
       } else {
-        // Медленно крадётся в темноте
         e.x+=(dx/d)*0.3;e.y+=(dy/d)*0.3;
       }
     }
@@ -1728,11 +1798,14 @@ function winLevel2(){
   if(ngPlus){ngPlusComplete=true;unlockAch('ng_plus');}
   saveGame();
 }
+
+// === YANDEX GAMES SDK: Вызов рекламы при смерти ===
 function die(msg){
   state='dead';player.dead=true;paused=false;shake=9;
   burst(player.x+5,player.y+7,'#ffd76a',30,3);
   SFX.death();SFX.setIntensity(1);
   document.title=msg;
+  showFullscreenAd(); // Показываем рекламу
 }
 
 /* ==================== ОТРИСОВКА ==================== */
@@ -1835,7 +1908,6 @@ function drawPlatforms(){
     ctx.fillStyle='#221d33';ctx.fillRect(x,y,s.w,s.h);
     ctx.fillStyle='#3d3560';ctx.fillRect(x,y,s.w,2);
   }
-  // Разрушаемые стены
   for(const b of breakables){
     if(b.broken)continue;
     const x=Math.round(b.x-cam.x),y=Math.round(b.y);
@@ -2023,7 +2095,6 @@ function drawEnemies(){
 
     if(e.type==='stalker'){
       if(!e.visible){
-        // Призрак в темноте
         ctx.globalAlpha=0.15;
         ctx.fillStyle='#2a1a3a';ctx.fillRect(x+2,y+2,10,12);
         ctx.globalAlpha=1;
@@ -2033,7 +2104,6 @@ function drawEnemies(){
       ctx.fillStyle=c;ctx.fillRect(x+2,y,10,16);
       ctx.fillStyle=e.flash>0?'#ffffff':'#ff2040';
       ctx.fillRect(x+4,y+4,2,3);ctx.fillRect(x+8,y+4,2,3);
-      // Шлейф
       ctx.globalAlpha=0.3;ctx.fillStyle='#6a3a8a';
       ctx.fillRect(x+2-e.vx*3,y+2,10,12);
       ctx.globalAlpha=1;
@@ -2042,7 +2112,6 @@ function drawEnemies(){
       const c=e.flash>0?'#6aaa6a':(iceTint||'#2a4a2a');
       ctx.fillStyle=c;
       ctx.beginPath();ctx.arc(x+8,y+8,8,0,6.283);ctx.fill();
-      // Аура
       ctx.globalAlpha=0.08+Math.sin(time*3)*0.04;
       ctx.fillStyle='#4a8a4a';
       ctx.beginPath();ctx.arc(x+8,y+8,e.auraRad,0,6.283);ctx.fill();
@@ -2172,7 +2241,6 @@ function drawPlayer(){
   const sg=getStaffGlow();
   const sway=Math.sin(time*8)*Math.min(2,Math.abs(player.vx)*1.5);
   
-  // Эффект рывка
   if(player.dashing>0){
     ctx.globalAlpha=0.4;
     ctx.fillStyle=sc.cloak;ctx.fillRect(x-f*6+sway*0.3,y+4,10,10);
@@ -2193,7 +2261,6 @@ function drawPlayer(){
   ctx.fillStyle=sg;ctx.fillRect(sx-1,y-9,4,4);
   ctx.fillStyle=`rgba(255,235,170,${0.55*p2})`;ctx.fillRect(sx-3,y-11,8,8);
   
-  // Индикатор заряда
   if(focusHoldTime>0.3&&player.dashing<=0){
     const chg=Math.min(1,(focusHoldTime-0.3)/0.3);
     ctx.fillStyle=`rgba(255,255,200,${chg*0.8})`;
@@ -2276,7 +2343,6 @@ function drawParticles(){
     ctx.fillRect(Math.round(p.x-cam.x),Math.round(p.y),2,2);
   }
   ctx.globalAlpha=1;
-  // Следы на снегу
   for(const t of snowTracks){
     const x=Math.round(t.x-cam.x),y=Math.round(t.y);
     ctx.globalAlpha=t.life/3*0.3;
@@ -2403,7 +2469,6 @@ function drawHUD(){
     ctx.font='7px "Courier New",monospace';ctx.fillStyle='#7f8bb0';
     ctx.fillText('1 2 3',x+18,y+h+38);
   }
-  // Dash CD indicator
   if(player.dashCd>0){
     ctx.fillStyle='rgba(255,255,255,0.3)';
     ctx.fillText('💨···',x+50,y+h+38);
@@ -2457,7 +2522,6 @@ function drawHUD(){
     ctx.fillText(SFX.isMuted()?'ЗВУК ВЫКЛ':'ЗВУК ВКЛ',VW/2,VH-19);
     ctx.textAlign='left';ctx.globalAlpha=1;
   }
-  // Пульсация при низком свете
   if(player.light<25&&state==='play'){
     const a=1-player.light/25;
     const pulse=0.5+0.5*Math.sin(time*4+a*6);
