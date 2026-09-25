@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -61,14 +62,11 @@
 let ysdk = null;
 let yPlayer = null;
 
-// Инициализация SDK
 function initYandexSDK() {
   if (typeof YaGames !== 'undefined') {
     YaGames.init().then(ysdkInstance => {
       ysdk = ysdkInstance;
       console.log('Yandex SDK initialized');
-      
-      // Пытаемся получить объект игрока для облачных сохранений
       ysdk.getPlayer().then(_player => {
         yPlayer = _player;
         loadCloudSave();
@@ -81,23 +79,17 @@ function initYandexSDK() {
   }
 }
 
-// Показ полноэкранной рекламы
 function showFullscreenAd() {
   if (ysdk) {
     ysdk.adv.showFullscreenAdv({
       callbacks: {
-        onClose: function(wasShown) {
-          console.log('Реклама закрыта');
-        },
-        onError: function(error) {
-          console.error('Ошибка рекламы:', error);
-        }
+        onClose: function(wasShown) { console.log('Реклама закрыта'); },
+        onError: function(error) { console.error('Ошибка рекламы:', error); }
       }
     });
   }
 }
 
-// Сохранение в облако
 function saveToCloud(data) {
   if (yPlayer) {
     yPlayer.setData({ gameData: JSON.stringify(data) }).then(() => {
@@ -108,15 +100,12 @@ function saveToCloud(data) {
   }
 }
 
-// Загрузка из облака
 function loadCloudSave() {
   if (yPlayer) {
     yPlayer.getData(['gameData']).then(data => {
       if (data.gameData) {
         try {
-          // Перезаписываем локальное хранилище данными из облака
           localStorage.setItem('fl_save2', data.gameData);
-          // Повторно загружаем игру, чтобы применить новые данные
           loadGame();
           console.log('Облачное сохранение загружено');
         } catch (e) {
@@ -129,7 +118,6 @@ function loadCloudSave() {
   }
 }
 
-// Запускаем инициализацию сразу
 initYandexSDK();
 
 /* ==================== SFX ==================== */
@@ -339,7 +327,11 @@ const SFX=(()=>{
     upgrade(){[440,554,659,880].forEach((f,i)=>tn(f,0.25,'triangle',0.12,null,i*0.1));},
     win(){[523.25,659.25,783.99,1046.5,1318.5].forEach((f,i)=>{
       tn(f,0.4,'triangle',0.16,null,i*0.11);tn(f*2,0.3,'sine',0.05,null,i*0.11+0.02);});
-      nz(0.6,0.10,6000,800,1.4,0.05);}
+      nz(0.6,0.10,6000,800,1.4,0.05);},
+    // === ЗВУКИ БАФФОВ ===
+    buffWind(){[523.25,659.25,783.99,1046.5].forEach((f,i)=>tn(f,0.35,'sine',0.14,null,i*0.08));nz(0.5,0.15,3000,800,1.4);},
+    buffLastLight(){[659.25,783.99,1046.5,1318.5].forEach((f,i)=>tn(f,0.5,'triangle',0.18,null,i*0.1));nz(0.8,0.2,5000,600,1.6);tn(100,1.0,'sine',0.15,50);},
+    buffAura(){tn(300,0.8,'sine',0.12,600);tn(450,0.6,'triangle',0.08,900,0.1);}
   };
 })();
 
@@ -722,6 +714,30 @@ let achievementPopup=null;
 let levelSurface='stone',levelTheme='default';
 let hitFlash=0;
 
+// === ОБУЧЕНИЕ ДЛЯ НОВИЧКОВ ===
+let hasSeenTutorial = false;
+let tutorialStep = 0;
+let tutDisplayTime = 0;
+const TUT_MIN_TIME = 3.5;
+const TUTORIAL_MSGS = [
+  "← → или A/D : Движение. Исследуй мир.",
+  "ПРОБЕЛ или ↑ : Прыжок. Доступен двойной прыжок!",
+  "Твой СВЕТ постоянно угасает. Не дай ему погаснуть!",
+  "SHIFT или F : Рывок (уклонение) или Удержание (заряд вспышки).",
+  "Отпусти SHIFT/F для Вспышки: Огонь бьёт, Лёд создаёт платформы, Молния бьёт цепью.",
+  "Найди Алтарь в конце пути, чтобы завершить уровень."
+];
+
+// === БАФФЫ ДЛЯ БОССА ===
+const bossBuffs = {
+  wind: 0,              // Таймер "Вторая ветер" (сек)
+  lastLightUsed: false, // Срабатывал ли "Последний свет" в этом бою
+  lastLightTimer: 0,    // Таймер неуязвимости от "Последний свет"
+  bossFightStart: 0,    // Время начала боя с боссом
+  auraActive: false,    // Активна ли "Аура героя"
+  popup: null           // Всплывающее сообщение о баффе
+};
+
 /* ==================== УТИЛИТЫ ==================== */
 const rnd=(a,b)=>a+Math.random()*(b-a);
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
@@ -742,12 +758,11 @@ function unlockAch(id){
 function saveGame(){
   const saveData = {
     level,deaths,bestTimes,diariesFound,achievements,skins,currentSkin,difficulty,secretsFound,
-    currency,upgrades,ngPlus,ngPlusComplete,stalkerKills,wallsBroken
+    currency,upgrades,ngPlus,ngPlusComplete,stalkerKills,wallsBroken,hasSeenTutorial
   };
   try{
     const jsonString = JSON.stringify(saveData);
     localStorage.setItem('fl_save2', jsonString);
-    // === YANDEX GAMES SDK: Сохранение в облако ===
     saveToCloud(saveData);
   }catch(e){}
 }
@@ -765,9 +780,9 @@ function loadGame(){
     if(s.ngPlus)ngPlus=s.ngPlus;if(s.ngPlusComplete)ngPlusComplete=s.ngPlusComplete;
     if(s.stalkerKills)stalkerKills=s.stalkerKills;
     if(s.wallsBroken)wallsBroken=s.wallsBroken;
+    if(s.hasSeenTutorial!==undefined) hasSeenTutorial = s.hasSeenTutorial;
   }catch(e){}
 }
-// Первичная загрузка (будет перезаписана облачной, если она есть)
 loadGame();
 
 /* ==================== ФАБРИКИ ==================== */
@@ -861,6 +876,20 @@ function loadLevel(n){
   focusHoldTime=0;
   jBuf=0;rBuf=0;cBuf=0;pBuf=0;prevF=false;staffBuffer=0;
   SFX.setIntensity(0);
+  
+  // Сброс обучения
+  if (n === 1 && !hasSeenTutorial) {
+    tutorialStep = 0;
+    tutDisplayTime = 0;
+  }
+  
+  // === СБРОС БАФФОВ ПРИ ЗАГРУЗКЕ УРОВНЯ ===
+  bossBuffs.wind = 0;
+  bossBuffs.lastLightUsed = false;
+  bossBuffs.lastLightTimer = 0;
+  bossBuffs.bossFightStart = 0;
+  bossBuffs.auraActive = false;
+  bossBuffs.popup = null;
 }
 
 /* ==================== ФИЗИКА ==================== */
@@ -917,6 +946,10 @@ function lightRadius(){
   let mult=1;
   if(foc()&&player.light>0)mult=1.5;
   if(flashWave){const t=flashWave.life/flashWave.maxLife;mult+=t*1.8;}
+  // === АУРА ГЕРОЯ: +25% к радиусу во время боя с боссом ===
+  if(boss && !boss.dead && bossBuffs.auraActive) mult *= 1.25;
+  // Бафф "Вторая ветер" тоже даёт +15%
+  if(bossBuffs.wind > 0) mult *= 1.15;
   return base*mult*flick;
 }
 
@@ -968,30 +1001,117 @@ function smithWave(){
     projectiles.push({x:cx,y:cy,vx:Math.cos(a)*1.9,vy:Math.sin(a)*1.9,life:3.5,from:'boss'});}
   SFX.bossPhase();
 }
+
+// === ВКЛЮЧЕНИЕ БАФФА "ВТОРАЯ ВЕТЕР" ===
+function activateSecondWind(){
+  if(bossBuffs.wind > 0) return;
+  bossBuffs.wind = 20; // 20 секунд
+  bossBuffs.popup = {
+    title: "🔥 ВТОРАЯ ВЕТЕР",
+    desc: "Регенерация +3/с  ·  Урон +50%  ·  20с",
+    t: 4,
+    color: '#ffd76a'
+  };
+  SFX.buffWind();
+  shake = Math.max(shake, 8);
+  burst(player.x+5, player.y+7, '#ffd76a', 30, 3);
+  // Полностью восстанавливаем немного света
+  player.light = Math.min(player.maxLight, player.light + 25);
+}
+
+// === ВКЛЮЧЕНИЕ БАФФА "ПОСЛЕДНИЙ СВЕТ" ===
+function activateLastLight(){
+  if(bossBuffs.lastLightUsed) return;
+  bossBuffs.lastLightUsed = true;
+  bossBuffs.lastLightTimer = 3; // 3 секунды неуязвимости
+  bossBuffs.popup = {
+    title: "✨ ПОСЛЕДНИЙ СВЕТ",
+    desc: "Неуязвимость 3с  ·  Мощная вспышка!",
+    t: 4,
+    color: '#e0f0ff'
+  };
+  SFX.buffLastLight();
+  shake = Math.max(shake, 10);
+  // Восстанавливаем свет до 60%
+  player.light = Math.min(player.maxLight, player.maxLight * 0.6);
+  // Активируем автоматическую заряженную вспышку
+  const cx = player.x + player.w/2;
+  const cy = player.y + player.h/2;
+  flashWave = {x:cx, y:cy, r:20, maxR:320, life:0.9, maxLife:0.9};
+  if(boss) boss.flashDone = false;
+  burst(cx, cy, '#ffffff', 50, 4);
+  // Наносим урон всем врагам в большом радиусе
+  for(const e of enemies){
+    if(e.dead) continue;
+    const dx = (e.x+e.w/2)-cx, dy = (e.y+e.h/2)-cy;
+    const d = Math.hypot(dx,dy);
+    if(d < 320){
+      e.hp -= 5;
+      e.flash = 1;
+      if(e.hp <= 0){
+        e.dead = true;
+        burst(e.x+e.w/2, e.y+e.h/2, '#ffffff', 15, 2.5);
+      }
+    }
+  }
+  if(boss && !boss.dead){
+    boss.hp -= 10;
+    boss.hitFlash = 1;
+    burst(boss.x+boss.w/2, boss.y+boss.h/2, '#ffffff', 30, 3);
+  }
+}
+
 function updateBoss(dt){
   if(!boss||boss.dead)return;
+  
+  // === ЗАСЕКАЕМ ВРЕМЯ НАЧАЛА БОЯ ===
+  if(bossBuffs.bossFightStart === 0) bossBuffs.bossFightStart = runTime;
+  
+  // === АКТИВИРУЕМ АУРУ ГЕРОЯ ===
+  if(!bossBuffs.auraActive){
+    bossBuffs.auraActive = true;
+    bossBuffs.popup = {
+      title: "🛡 АУРА ГЕРОЯ",
+      desc: "Утечка света -40%  ·  Радиус +25%",
+      t: 3,
+      color: '#a0e0ff'
+    };
+    SFX.buffAura();
+  }
+  
   boss.hitFlash=Math.max(0,boss.hitFlash-dt*2);
   boss.flash=Math.max(0,boss.flash-dt*2);
+  
+  // === ПЕРЕХОД В ФАЗУ 2 + АКТИВАЦИЯ "ВТОРАЯ ВЕТЕР" ===
   if(boss.phase===1&&boss.hp<=boss.maxHp*0.5){
     boss.phase=2;boss.idleDur=0.75;shake=Math.max(shake,10);SFX.bossPhase();
     burst(boss.x+boss.w/2,boss.y+boss.h/2,'#ff9a5c',30,3);
     player.vx=(player.x<boss.x?-1:1)*5;player.vy=-5;player.inv=1.2;
+    // АКТИВИРУЕМ БАФФ
+    setTimeout(activateSecondWind, 500);
   }
+  
   const cx=boss.x+boss.w/2,cy=boss.y+boss.h/2;
   const px=player.x+player.w/2,py=player.y+player.h/2;
   const d=Math.hypot(px-cx,py-cy)||1;
   const R=lightRadius();
+  
+  // === УСИЛЕННЫЙ УРОН ОТ ПОСТОЯННОГО ОСВЕЩЕНИЯ ПРИ "ВТОРАЯ ВЕТЕР" ===
+  let lightDmg = 3.0;
+  if(bossBuffs.wind > 0) lightDmg *= 1.5;
+  
   if(d<R*1.15){
-    boss.hp-=3.0*dt;boss.flash=1;
+    boss.hp-=lightDmg*dt;boss.flash=1;
     if(Math.random()<0.15)SFX.hitEnemy();
   }
   if(flashWave&&!boss.flashDone&&flashWave.life>flashWave.maxLife-0.1){
     const fd=Math.hypot(cx-flashWave.x,cy-flashWave.y);
     if(fd<180){
       const p=1-fd/180;
-      if(staffType==='fire')boss.hp-=4+8*p;
-      else if(staffType==='ice'){boss.hp-=2+4*p;boss.frozen=1.5;}
-      else if(staffType==='lightning')boss.hp-=3+6*p;
+      let dmgMult = bossBuffs.wind > 0 ? 1.5 : 1; // Усиление урона от "Вторая ветер"
+      if(staffType==='fire')boss.hp-=(4+8*p)*dmgMult;
+      else if(staffType==='ice'){boss.hp-=(2+4*p)*dmgMult;boss.frozen=1.5;}
+      else if(staffType==='lightning')boss.hp-=(3+6*p)*dmgMult;
       boss.hitFlash=1;shake=Math.max(shake,6);
     }
     boss.flashDone=true;
@@ -1000,6 +1120,9 @@ function updateBoss(dt){
   if(boss.hp<=0){
     boss.dead=true;shake=16;SFX.killEnemy();SFX.bossRoar();
     for(let i=0;i<60;i++)burst(cx,cy,i%2?'#ff9a5c':'#ffe9a3',1,4);
+    // === ОТКЛЮЧАЕМ БАФФЫ ===
+    bossBuffs.auraActive = false;
+    bossBuffs.wind = 0;
     if(boss.type==='smith'){
       unlockAch('smith_slayer');
       setTimeout(()=>{if(state==='play'&&!paused)goToInterlude2();},1500);
@@ -1060,7 +1183,8 @@ function updateBoss(dt){
     else if(boss.vy<0){boss.y=p.y+p.h;boss.vy=0;}}}
   if(boss.x<4){boss.x=4;boss.vx=0;}
   if(boss.x+boss.w>LEVEL_W-4){boss.x=LEVEL_W-4-boss.w;boss.vx=0;}
-  if(player.inv<=0&&overlap(player,boss)&&boss.frozen<=0){
+  // === БОСС НЕ МОЖЕТ НАНЕСТИ УРОН ВО ВРЕМЯ "ПОСЛЕДНИЙ СВЕТ" ===
+  if(player.inv<=0&&bossBuffs.lastLightTimer<=0&&overlap(player,boss)&&boss.frozen<=0){
     player.light=Math.max(0,player.light-20);player.inv=1.3;
     const k=px<cx?-1:1;player.vx=k*5;player.vy=-4;
     shake=Math.max(shake,7);burst(px,py,'#ff4d7a',14,2.4);SFX.hurt();damagedThisLevel=true;}
@@ -1093,9 +1217,14 @@ function updateTitleMenu(dt){
     cBuf=0;SFX.menuSelect();
     if(titleMenu==='main'){
       if(titleCursor===0){loadLevel(level||1);state='play';SFX.motif();}
-      else if(titleCursor===1){level=1;runTime=0;deaths=0;currency=0;
-        upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};ngPlus=false;
-        loadLevel(1);storyPhase='intro';storySlide=0;storyTimer=0;storyDone=false;state='story';}
+      else if(titleCursor===1){
+        level=1;runTime=0;deaths=0;currency=0;
+        upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};
+        ngPlus=false;
+        hasSeenTutorial = false;
+        tutorialStep = 0;
+        loadLevel(1);storyPhase='intro';storySlide=0;storyTimer=0;storyDone=false;state='story';
+      }
       else if(titleCursor===2&&opts[titleCursor]==='Угасающее Солнце'){
         ngPlus=true;level=1;loadLevel(1);storyPhase='ng_intro';storySlide=0;storyTimer=0;storyDone=false;state='story';}
       else if(opts[titleCursor]==='Костер'){titleMenu='bonfire';titleCursor=0;}
@@ -1105,6 +1234,7 @@ function updateTitleMenu(dt){
         try{localStorage.removeItem('fl_save2');}catch(e){}
         achievements=[];diariesFound=[];skins=['default'];currentSkin='default';
         deaths=0;level=1;secretsFound=0;currency=0;ngPlus=false;ngPlusComplete=false;
+        hasSeenTutorial = false; tutorialStep = 0;
         upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};saveGame();
       }
     } else if(titleMenu==='skins'){currentSkin=skins[titleCursor];saveGame();}
@@ -1144,6 +1274,15 @@ function update(dt){
     if(flashWave.life<=0)flashWave=null;}
   if(bossIntroT>0)bossIntroT-=dt;
   if(achievementPopup){achievementPopup.t-=dt;if(achievementPopup.t<=0)achievementPopup=null;}
+  
+  // === ОБНОВЛЕНИЕ ТАЙМЕРОВ БАФФОВ ===
+  if(bossBuffs.wind > 0) bossBuffs.wind -= dt;
+  if(bossBuffs.lastLightTimer > 0) bossBuffs.lastLightTimer -= dt;
+  if(bossBuffs.popup){
+    bossBuffs.popup.t -= dt;
+    if(bossBuffs.popup.t <= 0) bossBuffs.popup = null;
+  }
+  
   if(paused&&state!=='play')paused=false;
   pBuf-=dt;
   if(pBuf>0){pBuf=0;if(state==='play'){paused=!paused;SFX.storyNext();}}
@@ -1202,6 +1341,20 @@ function update(dt){
   if(paused)return;
   if(state!=='play')return;
 
+  // === ОБУЧЕНИЕ ===
+  if (state === 'play' && level === 1 && !hasSeenTutorial && !paused) {
+    tutDisplayTime += dt;
+    let advance = false;
+    if (tutorialStep === 0) { tutorialStep = 1; tutDisplayTime = 0; }
+    if (tutorialStep === 1 && tutDisplayTime > TUT_MIN_TIME && (Math.abs(player.vx) > 0.1)) advance = true;
+    if (tutorialStep === 2 && tutDisplayTime > TUT_MIN_TIME && player.jumps > 0) advance = true;
+    if (tutorialStep === 3 && tutDisplayTime > TUT_MIN_TIME && player.light < 60) advance = true;
+    if (tutorialStep === 4 && tutDisplayTime > TUT_MIN_TIME && (player.dashing > 0 || focusHoldTime > 0)) advance = true;
+    if (tutorialStep === 5 && tutDisplayTime > TUT_MIN_TIME && flashWave) advance = true;
+    if (tutorialStep === 6 && tutDisplayTime > TUT_MIN_TIME) { hasSeenTutorial = true; saveGame(); }
+    if (advance) { tutorialStep++; tutDisplayTime = 0; SFX.storyBlip(); }
+  }
+
   if(staffBuffer>0){
     const unlock=LEVELS[level].staff||'fire';
     let ok=false;
@@ -1216,6 +1369,8 @@ function update(dt){
   if(player.frozen>0)player.frozen-=dt;
   if(player.dashCd>0)player.dashCd-=dt;
   if(player.dashing>0){player.dashing-=dt;if(player.dashing<=0)player.inv=0;}
+  // === НЕУЯЗВИМОСТЬ ОТ "ПОСЛЕДНИЙ СВЕТ" ===
+  if(bossBuffs.lastLightTimer > 0) player.inv = Math.max(player.inv, 0.1);
 
   const speed=2.0,accel=0.35;
   const jumpPow=7.8*(1+upgrades.jump_pow*0.1);
@@ -1377,7 +1532,7 @@ function update(dt){
   moveAndCollide(player);
   if(player.onGround&&!wasG&&fS>4){SFX.land();stepTimer=0;}
   if(player.onGround)player.jumps=0;
-  if(player.inv>0&&player.dashing<=0)player.inv-=dt;
+  if(player.inv>0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0)player.inv-=dt;
 
   if(levelSurface==='ice'&&player.onGround&&Math.abs(player.vx)>0.3){
     if(Math.random()<0.3)snowTracks.push({x:player.x+5,y:player.y+14,life:3});
@@ -1433,6 +1588,11 @@ function update(dt){
   if(levelTheme==='water')drainMult*=1.5;
   if(player.bubble>0){drainMult=0;player.bubble-=dt;}
   
+  // === АУРА ГЕРОЯ: УМЕНЬШАЕМ УТЕЧКУ СВЕТА НА 40% ВО ВРЕМЯ БОЯ С БОССОМ ===
+  if(boss && !boss.dead && bossBuffs.auraActive){
+    drainMult *= 0.6;
+  }
+  
   for(const e of enemies){
     if(e.dead||e.type!=='leech')continue;
     const d=Math.hypot(player.x+5-e.x-8,player.y+7-e.y-8);
@@ -1448,6 +1608,23 @@ function update(dt){
   }
   if(nearShroom&&player.bubble<=0)player.light=Math.min(player.maxLight,player.light+0.5*dt);
   player.light=Math.max(0,player.light-drain);
+  
+  // === РЕГЕНЕРАЦИЯ ОТ "ВТОРАЯ ВЕТЕР" (+3 света в секунду) ===
+  if(bossBuffs.wind > 0){
+    player.light = Math.min(player.maxLight, player.light + 3 * dt);
+    // Частицы регенерации
+    if(Math.random() < dt * 5){
+      const px = player.x + 5 + rnd(-8, 8);
+      const py = player.y + 7 + rnd(-8, 8);
+      particles.push({x:px, y:py, vx:rnd(-0.3,0.3), vy:-rnd(0.5,1.5), 
+        life:rnd(0.5,1.2), max:1.2, color:'#ffd76a'});
+    }
+  }
+  
+  // === ПРОВЕРКА АКТИВАЦИИ "ПОСЛЕДНИЙ СВЕТ" ===
+  if(boss && !boss.dead && player.light < 25 && !bossBuffs.lastLightUsed && bossBuffs.lastLightTimer <= 0){
+    activateLastLight();
+  }
 
   if(levelTheme==='water'&&flashWave&&flashWave.life>flashWave.maxLife-0.05&&player.bubble<=0){
     player.bubble=1.5;
@@ -1522,7 +1699,7 @@ function update(dt){
     p.phase+=dt*p.speed;
     p.y=p.y0+Math.sin(p.phase)*p.amp;
     const hitBox={x:p.x,y:p.y,w:p.w,h:p.h};
-    if(overlap(player,hitBox)&&player.inv<=0&&player.dashing<=0){
+    if(overlap(player,hitBox)&&player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0){
       player.light=Math.max(0,player.light-15);
       player.inv=0.8;SFX.piston();
       player.vx=player.x<p.x?-4:4;player.vy=-3;
@@ -1538,7 +1715,7 @@ function update(dt){
     }
     if(ic.falling){
       ic.vy+=0.6;ic.y+=ic.vy;
-      if(overlap(player,{x:ic.x-4,y:ic.y-8,w:8,h:12})&&player.inv<=0&&player.dashing<=0){
+      if(overlap(player,{x:ic.x-4,y:ic.y-8,w:8,h:12})&&player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0){
         player.light=Math.max(0,player.light-18);
         player.inv=1.0;SFX.freeze();damagedThisLevel=true;
         burst(ic.x,ic.y,'#a0e0ff',10,2);
@@ -1557,7 +1734,7 @@ function update(dt){
     if(e.frozen>0){
       e.frozen-=dt;
       e.flash=Math.max(e.flash,e.frozen>0?0.3:0);
-      if(overlap(player,e)&&player.inv<=0&&player.dashing<=0){
+      if(overlap(player,e)&&player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0){
         player.light=Math.max(0,player.light-8);
         player.inv=1.0;SFX.hurt();damagedThisLevel=true;}
       continue;
@@ -1687,7 +1864,7 @@ function update(dt){
           SFX.killEnemy();}}
       else{e.x+=(dx/d)*e.speed;e.y+=(dy/d)*e.speed;}
     }
-    if(player.inv<=0&&player.dashing<=0&&overlap(player,e)&&e.frozen<=0&&e.type!=='leech'){
+    if(player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0&&overlap(player,e)&&e.frozen<=0&&e.type!=='leech'){
       const loss=11*e.dmgMult*(ngPlus?1.5:1);
       player.light=Math.max(0,player.light-loss);
       player.inv=1.1;
@@ -1704,7 +1881,7 @@ function update(dt){
     let hw=false;
     for(const pl of platforms){
       if(p.x>pl.x&&p.x<pl.x+pl.w&&p.y>pl.y&&p.y<pl.y+pl.h){hw=true;break;}}
-    if(!hw&&player.inv<=0&&player.dashing<=0&&p.x>player.x&&p.x<player.x+player.w&&
+    if(!hw&&player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0&&p.x>player.x&&p.x<player.x+player.w&&
        p.y>player.y&&p.y<player.y+player.h){
       player.light=Math.max(0,player.light-(p.from==='boss'?12:8)*(ngPlus?1.5:1));
       player.inv=1.1;burst(p.x,p.y,'#ff5c8a',8,1.8);
@@ -1716,7 +1893,7 @@ function update(dt){
   for(let i=hammers.length-1;i>=0;i--){
     const h=hammers[i];
     h.x+=h.vx;h.y+=h.vy;h.vy+=0.15;h.life-=dt;h.rot+=dt*10;
-    if(player.inv<=0&&player.dashing<=0&&h.x>player.x&&h.x<player.x+player.w&&
+    if(player.inv<=0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0&&h.x>player.x&&h.x<player.x+player.w&&
        h.y>player.y&&h.y<player.y+player.h){
       player.light=Math.max(0,player.light-14*(ngPlus?1.5:1));player.inv=1.1;
       burst(h.x,h.y,'#ff8c5a',10,2);SFX.hurt();hitFlash=0.25;damagedThisLevel=true;
@@ -1799,13 +1976,12 @@ function winLevel2(){
   saveGame();
 }
 
-// === YANDEX GAMES SDK: Вызов рекламы при смерти ===
 function die(msg){
   state='dead';player.dead=true;paused=false;shake=9;
   burst(player.x+5,player.y+7,'#ffd76a',30,3);
   SFX.death();SFX.setIntensity(1);
   document.title=msg;
-  showFullscreenAd(); // Показываем рекламу
+  showFullscreenAd();
 }
 
 /* ==================== ОТРИСОВКА ==================== */
@@ -2235,11 +2411,58 @@ function getStaffGlow(){
 function drawPlayer(){
   if(state==='dead')return;
   const x=Math.round(player.x-cam.x),y=Math.round(player.y);
-  if(player.inv>0&&player.dashing<=0&&Math.floor(time*20)%2===0)return;
+  // Мигание неуязвимости (кроме "Последнего света" - там постоянно яркое свечение)
+  if(player.inv>0&&player.dashing<=0&&bossBuffs.lastLightTimer<=0&&Math.floor(time*20)%2===0)return;
   const f=player.face;
   const sc=getSkinColors();
   const sg=getStaffGlow();
   const sway=Math.sin(time*8)*Math.min(2,Math.abs(player.vx)*1.5);
+  
+  // === ВИЗУАЛЬНЫЕ ЭФФЕКТЫ БАФФОВ ===
+  const cx = x + 5, cy = y + 7;
+  
+  // Аура героя (синее свечение при активном бое с боссом)
+  if(boss && !boss.dead && bossBuffs.auraActive){
+    const pulse = 0.3 + 0.2*Math.sin(time*4);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28);
+    g.addColorStop(0, `rgba(160,224,255,${pulse*0.3})`);
+    g.addColorStop(1, 'rgba(160,224,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();ctx.arc(cx, cy, 28, 0, 6.283);ctx.fill();
+  }
+  
+  // Вторая ветер (золотое пламя)
+  if(bossBuffs.wind > 0){
+    const pulse = 0.5 + 0.5*Math.sin(time*12);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 22);
+    g.addColorStop(0, `rgba(255,215,106,${0.4*pulse})`);
+    g.addColorStop(1, 'rgba(255,140,60,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();ctx.arc(cx, cy, 22, 0, 6.283);ctx.fill();
+  }
+  
+  // Последний свет (белое сияние с кольцами)
+  if(bossBuffs.lastLightTimer > 0){
+    const t = bossBuffs.lastLightTimer / 3;
+    const pulse = 0.6 + 0.4*Math.sin(time*20);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 30);
+    g.addColorStop(0, `rgba(255,255,255,${t*0.6*pulse})`);
+    g.addColorStop(0.5, `rgba(200,230,255,${t*0.3*pulse})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();ctx.arc(cx, cy, 30, 0, 6.283);ctx.fill();
+    // Вращающиеся кольца
+    ctx.strokeStyle = `rgba(255,255,255,${t*0.8})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for(let i=0; i<8; i++){
+      const a = time*5 + i*Math.PI/4;
+      const rx = cx + Math.cos(a)*18;
+      const ry = cy + Math.sin(a)*18;
+      ctx.moveTo(rx-1, ry);ctx.lineTo(rx+1, ry);
+    }
+    ctx.stroke();
+  }
   
   if(player.dashing>0){
     ctx.globalAlpha=0.4;
@@ -2530,7 +2753,108 @@ function drawHUD(){
     g.addColorStop(1,`rgba(60,0,20,${a*0.7*pulse})`);
     ctx.fillStyle=g;ctx.fillRect(0,0,VW,VH);
   }
+  
+  // === ИНДИКАТОРЫ АКТИВНЫХ БАФФОВ ===
+  if(boss && !boss.dead){
+    let buffY = 80;
+    const buffX = 10;
+    
+    if(bossBuffs.wind > 0){
+      ctx.fillStyle = 'rgba(255,140,60,0.85)';
+      ctx.fillRect(buffX, buffY, 92, 14);
+      ctx.strokeStyle = '#ffd76a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(buffX, buffY, 92, 14);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 8px "Courier New",monospace';
+      ctx.fillText('🔥 ВЕТЕР ' + Math.ceil(bossBuffs.wind) + 'с', buffX+3, buffY+10);
+      buffY += 18;
+    }
+    
+    if(bossBuffs.auraActive){
+      ctx.fillStyle = 'rgba(60,120,180,0.85)';
+      ctx.fillRect(buffX, buffY, 92, 14);
+      ctx.strokeStyle = '#a0e0ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(buffX, buffY, 92, 14);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 8px "Courier New",monospace';
+      ctx.fillText('🛡 АУРА', buffX+3, buffY+10);
+      buffY += 18;
+    }
+    
+    if(bossBuffs.lastLightTimer > 0){
+      const pulse = 0.6 + 0.4*Math.sin(time*10);
+      ctx.fillStyle = `rgba(255,255,255,${0.8*pulse})`;
+      ctx.fillRect(buffX, buffY, 92, 14);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(buffX, buffY, 92, 14);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 8px "Courier New",monospace';
+      ctx.fillText('✨ СВЕТ ' + bossBuffs.lastLightTimer.toFixed(1) + 'с', buffX+3, buffY+10);
+    }
+  }
 }
+
+function drawTutorial() {
+  if (state !== 'play' || level !== 1 || hasSeenTutorial || tutorialStep === 0 || paused) return;
+  const msg = TUTORIAL_MSGS[tutorialStep - 1];
+  if (!msg) return;
+  const boxW = 280, boxH = 40, boxX = (VW - boxW) / 2, boxY = VH - 70;
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.92)';
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.strokeStyle = 'rgba(255, 215, 106, 0.7)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX, boxY, boxW, boxH);
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 10px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('ОБУЧЕНИЕ', VW / 2, boxY + 14);
+  ctx.fillStyle = '#c9d4e8';
+  ctx.font = '9px "Courier New", monospace';
+  ctx.fillText(msg, VW / 2, boxY + 30);
+  ctx.textAlign = 'left';
+}
+
+// === ОТРИСОВКА ПОПАПА БАФФА ===
+function drawBuffPopup(){
+  if(!bossBuffs.popup) return;
+  const p = bossBuffs.popup;
+  const alpha = Math.min(1, p.t);
+  const boxW = 220, boxH = 44;
+  const boxX = (VW - boxW) / 2;
+  const boxY = 110;
+  
+  ctx.globalAlpha = alpha;
+  // Тёмный фон с рамкой
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.95)';
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX, boxY, boxW, boxH);
+  // Внутреннее свечение
+  const g = ctx.createRadialGradient(VW/2, boxY+boxH/2, 0, VW/2, boxY+boxH/2, boxW/2);
+  g.addColorStop(0, p.color.replace(')', ',0.15)').replace('rgb', 'rgba'));
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  
+  // Заголовок
+  ctx.fillStyle = p.color;
+  ctx.font = 'bold 12px "Courier New",monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(p.title, VW/2, boxY+16);
+  
+  // Описание
+  ctx.fillStyle = '#c9d4e8';
+  ctx.font = '8px "Courier New",monospace';
+  ctx.fillText(p.desc, VW/2, boxY+32);
+  
+  ctx.textAlign = 'left';
+  ctx.globalAlpha = 1;
+}
+
 function drawCompass(){
   if(!compassTarget||state!=='play')return;
   const px=player.x+5-cam.x,py=player.y+7;
@@ -2784,6 +3108,8 @@ function render(){
   drawAltar();drawExit();drawEnemies();drawMotes();drawSilhouette();
   drawBoss();drawPlayer();drawProjectiles();drawChainBolts();drawParticles();
   drawFlashWave();drawRain();drawDarkness();drawHUD();drawCompass();
+  drawTutorial();
+  drawBuffPopup(); // <-- Всплывающее сообщение о баффе
   if(boss&&!boss.dead&&state==='play'&&!paused)drawBossHP();
   if(bossIntroT>0&&!paused){
     ctx.globalAlpha=Math.min(1,bossIntroT);
