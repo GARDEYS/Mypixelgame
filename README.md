@@ -58,6 +58,18 @@
 
 let ysdk = null;
 let yPlayer = null;
+let gameInitialized = false;
+
+function startGame() {
+  if (gameInitialized) return;
+  gameInitialized = true;
+  loadGame();
+  loadLevel(1);
+  state = 'title';
+  titleMenu = 'main';
+  titleCursor = 0;
+  requestAnimationFrame(loop);
+}
 
 function initYandexSDK() {
   if (typeof YaGames !== 'undefined') {
@@ -65,9 +77,16 @@ function initYandexSDK() {
       ysdk = ysdkInstance;
       ysdk.getPlayer().then(_player => {
         yPlayer = _player;
-        loadCloudSave();
-      }).catch(err => {});
-    }).catch(err => {});
+        yPlayer.getData(['gameData']).then(data => {
+          if (data.gameData) {
+            try { localStorage.setItem('fl_save2', data.gameData); } catch (e) {}
+          }
+          startGame();
+        }).catch(() => startGame());
+      }).catch(() => startGame());
+    }).catch(() => startGame());
+  } else {
+    startGame();
   }
 }
 
@@ -87,21 +106,6 @@ function saveToCloud(data) {
     yPlayer.setData({ gameData: JSON.stringify(data) }).then(() => {}).catch(err => {});
   }
 }
-
-function loadCloudSave() {
-  if (yPlayer) {
-    yPlayer.getData(['gameData']).then(data => {
-      if (data.gameData) {
-        try {
-          localStorage.setItem('fl_save2', data.gameData);
-          loadGame();
-        } catch (e) {}
-      }
-    }).catch(err => {});
-  }
-}
-
-initYandexSDK();
 
 const SFX=(()=>{
   let ac=null,master=null,input=null,reverb=null,dry=null,wet=null;
@@ -689,7 +693,6 @@ const TUTORIAL_MSGS = [
   "Найди Алтарь в конце пути."
 ];
 
-// === БАФФЫ ДЛЯ БОССА ===
 const bossBuffs = {
   wind: 0,
   lastLightUsed: false,
@@ -743,7 +746,6 @@ function loadGame(){
     if(s.hasSeenTutorial!==undefined) hasSeenTutorial = s.hasSeenTutorial;
   }catch(e){}
 }
-loadGame();
 
 function makeEnemy(sp){
   const b={x:sp.x,y:sp.y,type:sp.type,t:Math.random()*6.28,dead:false,flash:0,frozen:0};
@@ -835,7 +837,6 @@ function loadLevel(n){
   jBuf=0;rBuf=0;cBuf=0;pBuf=0;prevF=false;staffBuffer=0;
   SFX.setIntensity(0);
   
-  // Обучение инициализируем только если ещё не видели
   if (n === 1 && !hasSeenTutorial) {
     tutorialStep = 0;
     tutDisplayTime = 0;
@@ -1114,8 +1115,11 @@ function updateBoss(dt){
     if(boss.stateT<=0){boss.state='idle';boss.stateT=boss.idleDur;boss._fired=false;boss.vx=0;}}
   else if(boss.state==='slam'){
     if(!boss._fired){bossSlam();boss._fired=true;}
-    if(boss.onGround&&boss.vy===0&&boss.stateT<0.5){bossSlamImpact();
-      boss.state='idle';boss.stateT=boss.idleDur;boss._fired=false;}
+    // ИСПРАВЛЕНИЕ: Использование Math.abs(boss.vy) < 1.5 вместо строгого === 0
+    if(boss.onGround && Math.abs(boss.vy) < 1.5 && boss.stateT < 0.5){
+      bossSlamImpact();
+      boss.state='idle';boss.stateT=boss.idleDur;boss._fired=false;
+    }
     if(boss.stateT<=0){boss.state='idle';boss.stateT=boss.idleDur;boss._fired=false;}}
   boss.vy+=0.55;if(boss.vy>12)boss.vy=12;
   boss.x+=boss.vx;boss.y+=boss.vy;
@@ -1161,7 +1165,6 @@ function updateTitleMenu(dt){
         level=1;runTime=0;deaths=0;currency=0;
         upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};
         ngPlus=false;
-        // Флаг обучения НЕ сбрасываем — чтобы оно не появлялось снова
         loadLevel(1);storyPhase='intro';storySlide=0;storyTimer=0;storyDone=false;state='story';
       }
       else if(titleCursor===2&&opts[titleCursor]==='Угасающее Солнце'){
@@ -1437,12 +1440,13 @@ function update(dt){
   }
   prevF=focusing;
 
+  // ИСПРАВЛЕНИЕ: Улучшенная проверка скольжения по стене (допуск 6 пикселей вместо 3)
   player.wallSlide=false;
   if(!player.onGround&&player.vy>0&&player.dashing<=0){
     for(const p of platforms){
       if(player.y+player.h>p.y&&player.y<p.y+p.h){
-        if(Math.abs(player.x-p.x-p.w)<3&&lft()){player.wallSlide=true;break;}
-        if(Math.abs(player.x+player.w-p.x)<3&&rgt()){player.wallSlide=true;break;}
+        if(player.x <= p.x + p.w && player.x >= p.x + p.w - 6 && lft()){player.wallSlide=true;break;}
+        if(player.x + player.w >= p.x && player.x + player.w <= p.x + 6 && rgt()){player.wallSlide=true;break;}
       }
     }
   }
@@ -2446,6 +2450,7 @@ function drawProjectiles(){
 }
 function drawChainBolts(){
   if(!chainBolts.length)return;
+  ctx.save();
   ctx.globalCompositeOperation='lighter';
   for(const b of chainBolts){
     const a=Math.min(1,b.life/0.3);
@@ -2462,7 +2467,7 @@ function drawChainBolts(){
     }
     ctx.stroke();
   }
-  ctx.globalCompositeOperation='source-over';
+  ctx.restore();
 }
 function drawFlashWave(){
   if(!flashWave)return;
@@ -2720,7 +2725,6 @@ function drawHUD(){
   }
 }
 
-// === НАДПИСЬ ОБУЧЕНИЯ ТЕПЕРЬ СВЕРХУ ===
 function drawTutorial() {
   if (state !== 'play' || level !== 1 || hasSeenTutorial || tutorialStep === 0 || paused) return;
   const msg = TUTORIAL_MSGS[tutorialStep - 1];
@@ -3059,8 +3063,9 @@ function loop(now){
   while(acc>=STEP&&g++<5){update(STEP);acc-=STEP;}
   render();
 }
-loadLevel(1);state='title';titleMenu='main';titleCursor=0;
-requestAnimationFrame(loop);
+
+// Инициализация запускается только после загрузки SDK или с фоллбэком
+initYandexSDK();
 })();
 </script>
 </body>
