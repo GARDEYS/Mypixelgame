@@ -697,7 +697,7 @@ const bossBuffs = {
   bossFightStart: 0,
   auraActive: false,
   popup: null,
-  secondWindTriggered: false // <-- ДОБАВЛЕНО: флаг, чтобы не триггерить дважды
+  secondWindTriggered: false
 };
 
 const rnd=(a,b)=>a+Math.random()*(b-a);
@@ -835,12 +835,12 @@ function loadLevel(n){
   jBuf=0;rBuf=0;cBuf=0;pBuf=0;prevF=false;staffBuffer=0;
   SFX.setIntensity(0);
   
+  // Обучение инициализируем только если ещё не видели
   if (n === 1 && !hasSeenTutorial) {
     tutorialStep = 0;
     tutDisplayTime = 0;
   }
   
-  // Сброс баффов
   bossBuffs.wind = 0;
   bossBuffs.lastLightUsed = false;
   bossBuffs.lastLightTimer = 0;
@@ -1013,7 +1013,6 @@ function activateLastLight(){
 function updateBoss(dt){
   if(!boss||boss.dead)return;
   
-  // === ИСПРАВЛЕНИЕ: Устанавливаем auraActive в самом начале, ДО любых return ===
   if(!bossBuffs.auraActive){
     bossBuffs.auraActive = true;
     bossBuffs.bossFightStart = runTime;
@@ -1029,12 +1028,10 @@ function updateBoss(dt){
   boss.hitFlash=Math.max(0,boss.hitFlash-dt*2);
   boss.flash=Math.max(0,boss.flash-dt*2);
   
-  // Переход в фазу 2 + активация "Вторая ветер"
   if(boss.phase===1&&boss.hp<=boss.maxHp*0.5&&!bossBuffs.secondWindTriggered){
     boss.phase=2;boss.idleDur=0.75;shake=Math.max(shake,10);SFX.bossPhase();
     burst(boss.x+boss.w/2,boss.y+boss.h/2,'#ff9a5c',30,3);
     player.vx=(player.x<boss.x?-1:1)*5;player.vy=-5;player.inv=1.2;
-    // Активируем сразу, без setTimeout
     activateSecondWind();
   }
   
@@ -1164,8 +1161,7 @@ function updateTitleMenu(dt){
         level=1;runTime=0;deaths=0;currency=0;
         upgrades={light_max:0,drain_res:0,jump_pow:0,dash_cd:0};
         ngPlus=false;
-        hasSeenTutorial = false;
-        tutorialStep = 0;
+        // Флаг обучения НЕ сбрасываем — чтобы оно не появлялось снова
         loadLevel(1);storyPhase='intro';storySlide=0;storyTimer=0;storyDone=false;state='story';
       }
       else if(titleCursor===2&&opts[titleCursor]==='Угасающее Солнце'){
@@ -2724,11 +2720,12 @@ function drawHUD(){
   }
 }
 
+// === НАДПИСЬ ОБУЧЕНИЯ ТЕПЕРЬ СВЕРХУ ===
 function drawTutorial() {
   if (state !== 'play' || level !== 1 || hasSeenTutorial || tutorialStep === 0 || paused) return;
   const msg = TUTORIAL_MSGS[tutorialStep - 1];
   if (!msg) return;
-  const boxW = 280, boxH = 40, boxX = (VW - boxW) / 2, boxY = VH - 70;
+  const boxW = 280, boxH = 40, boxX = (VW - boxW) / 2, boxY = 30;
   ctx.fillStyle = 'rgba(4, 6, 16, 0.92)';
   ctx.fillRect(boxX, boxY, boxW, boxH);
   ctx.strokeStyle = 'rgba(255, 215, 106, 0.7)';
